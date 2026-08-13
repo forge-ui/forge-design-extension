@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Forge Design Privacy Policy</title>
+  <meta name="description" content="Privacy policy for the Forge Design Chrome extension." />
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif;
+      max-width: 760px;
+      margin: 40px auto;
+      padding: 0 18px 64px;
+      line-height: 1.65;
+      color: #111;
+      background: #fff;
+    }
+    @media (prefers-color-scheme: dark) {
+      body { color: #e5e7eb; background: #0b1220; }
+      a { color: #93c5fd; }
+      .muted { color: #94a3b8; }
+      hr { border-color: #1f2937; }
+    }
+    h1 { font-size: 1.6rem; margin: 0 0 0.4em; }
+    h2 { font-size: 1.1rem; margin-top: 1.7em; }
+    .muted { color: #666; font-size: 0.92rem; }
+    ul { padding-left: 1.2em; }
+    li { margin: 0.35em 0; }
+    hr { margin: 2.5em 0; border: none; border-top: 1px solid #e5e7eb; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.92em; }
+  </style>
+</head>
+<body>
+  <h1>Forge Design 隐私政策</h1>
+  <p class="muted">最后更新：2026-08-13</p>
+
+  <p>
+    Forge Design（“本扩展”）是一款 Google Chrome 扩展，用于把本机 Grok 桥接到
+    当前页面，方便点选组件、调试和修改 Web 应用界面。
+  </p>
+
+  <h2>1. 我们收集哪些数据</h2>
+  <p>本扩展<strong>不会</strong>由运营方向其服务器收集、出售或向第三方出售用户个人数据。</p>
+  <p>扩展可能在<strong>用户自己的设备上</strong>本地处理或暂存以下信息：</p>
+  <ul>
+    <li>本机 bridge 的连接配置（例如端口、用于本机配对的本地共享密钥）；</li>
+    <li>专用 agent 标签的标识（例如标签 ID），用于静默自动化；</li>
+    <li>为执行用户或本地 AI 经本机 bridge 下发的命令而临时读取的页面内容
+      （例如当前 URL、页面文本、可交互元素），仅用于完成本地命令。</li>
+  </ul>
+
+  <h2>2. 数据如何使用</h2>
+  <ul>
+    <li>仅用于完成本扩展的单一用途：连接本机 bridge，并在 Chrome 中执行本地控制命令；</li>
+    <li>本地共享密钥仅用于扩展与本机服务配对，防止本机其他程序擅自发令；</li>
+    <li>不将浏览历史、页面内容或密钥上传到扩展运营方的远程服务器。</li>
+  </ul>
+
+  <h2>3. 数据存储与传输</h2>
+  <ul>
+    <li>配置数据使用 Chrome <code>storage.local</code> 保存在用户设备上；</li>
+    <li>扩展与 bridge 的通信默认仅发生在本机地址（127.0.0.1 / localhost）；</li>
+    <li>本扩展不依赖远程后端来提供核心控制功能。</li>
+  </ul>
+
+  <h2>4. 权限说明</h2>
+  <p>
+    本扩展申请标签页、脚本注入、本地存储、闹钟、侧栏及主机访问等权限，
+    目的是在专用 agent 标签中完成导航与页面操作，并与本机 bridge 保持连接。
+    默认自动化目标为专用 agent 标签，而非用户日常浏览标签。
+  </p>
+  <p>
+    “本地共享密钥”不是 Google / xAI 账号密码，也不是任何云端 API Key，
+    仅用于本机扩展与 bridge 服务配对。
+  </p>
+
+  <h2>5. 第三方服务</h2>
+  <p>
+    本扩展本身不集成广告 SDK 或第三方分析 SDK。
+    用户若通过本地 AI 或 CLI 使用本扩展，相关 AI 服务的数据处理适用该服务自己的政策，
+    不由本扩展运营方控制。
+  </p>
+
+  <h2>6. 数据安全</h2>
+  <p>
+    请用户妥善保管本机 bridge 生成的本地共享密钥，勿发到公开渠道。
+    掌握该密钥的本机调用方可能通过已连接的扩展向浏览器发送操作指令。
+  </p>
+
+  <h2>7. 儿童隐私</h2>
+  <p>本扩展不以儿童为对象，也不会故意收集儿童的个人信息。</p>
+
+  <h2>8. 政策变更</h2>
+  <p>若本政策有重大变更，我们将更新本页面上的“最后更新”日期。</p>
+
+  <h2>9. 联系方式</h2>
+  <p>
+    如对隐私有疑问，请通过 Chrome 网上应用店商品详情页中的开发者联系方式联系我们，
+    或发送邮件至：<a href="mailto:hesongworkmail@gmail.com">hesongworkmail@gmail.com</a>。
+  </p>
+
+  <hr />
+
+  <h1>Privacy Policy (English)</h1>
+  <p class="muted">Last updated: 2026-08-13</p>
+
+  <p>
+    Forge Design (“the Extension”) is a Google Chrome extension that connects a
+    user-run local Grok bridge to the current page so you can pick components and edit a web app.
+  </p>
+
+  <h2>1. Data we collect</h2>
+  <p>
+    We do <strong>not</strong> collect, sell, or transfer personal data to servers operated by us.
+  </p>
+  <p>The Extension may process or store the following only on the user’s device:</p>
+  <ul>
+    <li>Local bridge settings (e.g. port and a local shared secret used for pairing);</li>
+    <li>The dedicated agent tab identifier used for silent automation;</li>
+    <li>Page content temporarily accessed to execute commands issued via the local bridge
+      (e.g. URL, page text, interactive elements).</li>
+  </ul>
+
+  <h2>2. How data is used</h2>
+  <ul>
+    <li>Only to fulfill the Extension’s single purpose: connect to the local bridge and run local browser commands in Chrome;</li>
+    <li>The local shared secret pairs the Extension with the local server and helps prevent other local programs from sending commands without that secret;</li>
+    <li>We do not upload browsing history, page contents, or the secret to remote servers operated by us.</li>
+  </ul>
+
+  <h2>3. Storage and transmission</h2>
+  <ul>
+    <li>Settings are stored with Chrome <code>storage.local</code> on the user’s device;</li>
+    <li>Communication with the bridge is limited to localhost (127.0.0.1 / localhost);</li>
+    <li>Core control does not depend on a remote backend operated by us.</li>
+  </ul>
+
+  <h2>4. Permissions</h2>
+  <p>
+    Permissions such as tabs, scripting, storage, alarms, side panel, and host access are used to
+    navigate and operate pages in a dedicated agent tab and keep the local bridge connection alive.
+    Automation targets the agent tab by default, not the user’s everyday browsing tab.
+  </p>
+  <p>
+    The local shared secret is not a Google/xAI account password and not a cloud API key.
+  </p>
+
+  <h2>5. Third parties</h2>
+  <p>
+    The Extension does not include advertising or third-party analytics SDKs.
+    If you drive the Extension through a local AI or CLI, that AI provider’s own privacy policy applies to their service.
+  </p>
+
+  <h2>6. Security</h2>
+  <p>
+    Keep the local shared secret private. Anyone who has it on your machine may send browser commands
+    through a connected Extension.
+  </p>
+
+  <h2>7. Children’s privacy</h2>
+  <p>The Extension is not directed at children and does not knowingly collect children’s personal data.</p>
+
+  <h2>8. Changes</h2>
+  <p>If this policy changes materially, we will update the “Last updated” date on this page.</p>
+
+  <h2>9. Contact</h2>
+  <p>
+    Questions: use the developer contact on the Chrome Web Store listing, or email
+    <a href="mailto:hesongworkmail@gmail.com">hesongworkmail@gmail.com</a>.
+  </p>
+</body>
+</html>

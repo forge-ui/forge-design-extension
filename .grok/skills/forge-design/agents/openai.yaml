@@ -1,0 +1,4 @@
+interface:
+  display_name: "Forge Design"
+  short_description: "Pick a page component in Chrome and change it with local Grok"
+  default_prompt: "Use $forge-design to inspect the current pick and update that UI."

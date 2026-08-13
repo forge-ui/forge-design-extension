@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Forge Design</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <header class="top">
+      <button class="icon-btn compose" id="newChatBtn" type="button" title="新建对话">
+        <!-- solar PenNewSquareLinear -->
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true">
+          <path
+            d="M22 10.5V12c0 4.714 0 7.071-1.465 8.535C19.072 22 16.714 22 12 22s-7.071 0-8.536-1.465C2 19.072 2 16.714 2 12s0-7.071 1.464-8.536C4.93 2 7.286 2 12 2h1.5"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+          />
+          <path
+            d="m16.652 3.455.649-.649A2.753 2.753 0 0 1 21.194 6.7l-.65.649m-3.892-3.893s.081 1.379 1.298 2.595c1.216 1.217 2.595 1.298 2.595 1.298m-3.893-3.893L10.687 9.42c-.404.404-.606.606-.78.829-.205.262-.38.547-.524.848-.121.255-.211.526-.392 1.068L8.412 13.9m12.133-6.552-5.965 5.965c-.404.404-.606.606-.829.78a4.59 4.59 0 0 1-.848.524c-.255.121-.526.211-1.068.392l-1.735.579m0 0-1.123.374a.742.742 0 0 1-.939-.94l.374-1.122m1.688 1.688L8.412 13.9"
+            stroke="currentColor"
+            stroke-width="1.5"
+          />
+        </svg>
+      </button>
+      <button class="brand" id="menuBtn" type="button" title="本地会话">
+        <span id="chatTitle">新对话</span>
+        <!-- solar AltArrowDownLinear -->
+        <svg class="caret" viewBox="0 0 24 24" width="16" height="16" fill="none" aria-hidden="true">
+          <path d="m19 9-7 6-7-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </button>
+      <div class="top-actions">
+        <button class="icon-btn" id="moreBtn" type="button" title="更多">
+          <!-- solar MenuDotsBold -->
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true">
+            <circle cx="5" cy="12" r="1.75" />
+            <circle cx="12" cy="12" r="1.75" />
+            <circle cx="19" cy="12" r="1.75" />
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <div class="more-menu" id="moreMenu" hidden>
+      <div class="more-label">当前目录</div>
+      <div class="dir-now" id="dirNow"></div>
+      <div class="dir-list" id="dirList"></div>
+      <form class="dir-form" id="dirForm">
+        <input id="dirInput" type="text" placeholder="输入或粘贴目录路径" />
+        <button type="submit">使用</button>
+      </form>
+    </div>
+
+    <div class="menu" id="menu" hidden>
+      <div class="session-search">
+        <input id="sessionSearch" type="search" placeholder="搜索会话" />
+      </div>
+      <div class="menu-empty" id="sessionEmpty" hidden>没有找到本地会话</div>
+      <div class="menu-list" id="sessionList"></div>
+    </div>
+
+    <main class="thread" id="thread">
+      <div class="empty" id="empty">
+        <img src="icons/forge-logo.svg" alt="" />
+      </div>
+      <div class="setup" id="setup" hidden>
+        <img src="icons/forge-logo.svg" alt="" />
+        <h2>先启动本机桥接</h2>
+        <p>插件只是界面。对话和改页面需要本机 Grok 服务，装一次后会开机自启。</p>
+        <p class="setup-step">终端里执行：</p>
+        <pre id="installCmd">curl -fsSL https://raw.githubusercontent.com/forge-ui/forge-design-extension/main/install.sh | bash</pre>
+        <button type="button" id="copyInstall">复制命令</button>
+        <p class="setup-hint" id="setupHint">正在检测本机服务…</p>
+      </div>
+    </main>
+
+    <button class="jump-latest" id="jumpLatest" type="button" hidden>回到最新</button>
+    <footer class="dock">
+      <form class="composer" id="composer">
+        <textarea id="input" rows="1" placeholder="问问这个页面"></textarea>
+        <div class="composer-bar">
+          <button class="pick-btn" id="pickBtn" type="button" title="选择页面元素">
+            <!-- solar CursorSquareLinear -->
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" aria-hidden="true">
+              <path
+                d="m14.859 16.5-2.461-2.461-.752.751c-.77.77-1.154 1.154-1.568 1.064-.413-.091-.602-.602-.978-1.623l-1.255-3.406c-.75-2.037-1.125-3.055-.6-3.58.525-.525 1.543-.15 3.58.6L14.231 9.1c1.021.376 1.532.565 1.623.978.09.414-.294.798-1.064 1.568l-.751.752 2.46 2.461c.256.255.383.382.442.524a.774.774 0 0 1 0 .593c-.059.142-.186.27-.441.524-.255.255-.382.382-.524.441a.774.774 0 0 1-.593 0c-.142-.059-.27-.186-.524-.441Z"
+                stroke="currentColor"
+                stroke-width="1.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+              <path
+                d="M2 12c0-4.714 0-7.071 1.464-8.536C4.93 2 7.286 2 12 2c4.714 0 7.071 0 8.535 1.464C22 4.93 22 7.286 22 12c0 4.714 0 7.071-1.465 8.535C19.072 22 16.714 22 12 22s-7.071 0-8.536-1.465C2 19.072 2 16.714 2 12Z"
+                stroke="currentColor"
+                stroke-width="1.5"
+              />
+            </svg>
+            <span id="pickLabel">选择以编辑</span>
+            <span class="pick-clear" id="clearPickBtn" hidden>
+              <!-- solar CloseCircleLinear -->
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true">
+                <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.5" />
+                <path d="m14.5 9.5-5 5m0-5 5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+              </svg>
+            </span>
+          </button>
+          <button class="send" id="sendBtn" type="submit" disabled>
+            <!-- solar ArrowUpLinear -->
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" aria-hidden="true">
+              <path
+                d="M12 20V4m0 0 6 6m-6-6-6 6"
+                stroke="currentColor"
+                stroke-width="1.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </button>
+        </div>
+      </form>
+    </footer>
+    <script src="vendor/marked.min.js"></script>
+    <script src="vendor/thinking-orbs-engine.js"></script>
+    <script src="thinking-orb.js"></script>
+    <script src="sidepanel.js"></script>
+  </body>
+</html>

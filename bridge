@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Convenience wrapper
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+cd "$ROOT/server"
+if [[ "${1:-}" == "start" ]]; then
+  exec node server.js
+fi
+exec node cli.js "$@"

@@ -1,0 +1,10 @@
+node_modules/
+.bridge-state.json
+.bridge-pick.json
+.bridge-home
+.DS_Store
+*.log
+dist/
+docs/
+server/tmp-*.cjs
+extension/icons/grok-appstore-1024.png

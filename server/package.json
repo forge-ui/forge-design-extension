@@ -1,0 +1,14 @@
+{
+  "name": "forge-design-bridge-server",
+  "version": "0.1.1",
+  "private": true,
+  "type": "module",
+  "description": "Local control server for the Forge Design Chrome extension",
+  "scripts": {
+    "start": "node server.js",
+    "cli": "node cli.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  }
+}
