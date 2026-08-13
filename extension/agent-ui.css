@@ -23,6 +23,9 @@
   height: 30px;
   transform: translate3d(0, 0, 0);
   transform-origin: 0 0;
+  filter:
+    drop-shadow(0 0 6px rgba(59, 130, 246, 0.9))
+    drop-shadow(0 0 15px rgba(59, 130, 246, 0.48));
 }
 
 .gcb-agent-cursor-arrow svg {
