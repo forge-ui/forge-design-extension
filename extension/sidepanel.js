@@ -31,6 +31,8 @@ let includePick = false;
 let lastPick = null;
 let sending = false;
 let stickToBottom = true;
+let lastThreadScrollTop = 0;
+let ignoreThreadScroll = false;
 let activeAbort = null;
 
 const SEND_ICON =
@@ -183,15 +185,26 @@ function renderMessages() {
 }
 
 function isThreadNearBottom() {
-  return thread.scrollHeight - thread.scrollTop - thread.clientHeight < 48;
+  return thread.scrollHeight - thread.scrollTop - thread.clientHeight < 8;
 }
 
-function syncThreadScroll() {
-  if (stickToBottom) thread.scrollTop = thread.scrollHeight;
+function syncJumpLatest() {
   const jumpLatest = document.getElementById('jumpLatest');
   if (jumpLatest) {
     jumpLatest.hidden = stickToBottom || current.messages.length === 0;
   }
+}
+
+function syncThreadScroll() {
+  if (stickToBottom) {
+    const maxScroll = Math.max(0, thread.scrollHeight - thread.clientHeight);
+    if (Math.abs(thread.scrollTop - maxScroll) > 1) {
+      ignoreThreadScroll = true;
+      thread.scrollTop = maxScroll;
+    }
+    lastThreadScrollTop = thread.scrollTop;
+  }
+  syncJumpLatest();
 }
 
 function updateStreamingText(text) {
@@ -636,8 +649,19 @@ composer.addEventListener('submit', (event) => {
 });
 
 thread.addEventListener('scroll', () => {
-  stickToBottom = isThreadNearBottom();
-  syncThreadScroll();
+  if (ignoreThreadScroll) {
+    ignoreThreadScroll = false;
+    lastThreadScrollTop = thread.scrollTop;
+    return;
+  }
+  const scrolledUp = lastThreadScrollTop - thread.scrollTop;
+  if (scrolledUp > 24) {
+    stickToBottom = false;
+  } else if (isThreadNearBottom()) {
+    stickToBottom = true;
+  }
+  lastThreadScrollTop = thread.scrollTop;
+  syncJumpLatest();
 });
 
 document.getElementById('jumpLatest').addEventListener('click', () => {
