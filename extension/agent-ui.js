@@ -1,5 +1,6 @@
 /**
- * Forge Design — dark cursor favicon + visible automation pointer
+ * Forge Design — Codex-style tab icon (washed original favicon + cursor overlay)
+ * and a visible automation pointer on the page.
  */
 (function () {
   if (window.__gcbAgentUi) return;
@@ -7,9 +8,14 @@
 
   let enabled = false;
   let faviconHref = null;
+  let faviconBuild = null;
   let faviconTimer = null;
   let headObserver = null;
   let applyingFavicon = false;
+  let applyFaviconQueued = false;
+  let originalFaviconHref = null;
+  let originalIconSnapshots = [];
+  let faviconGeneration = 0;
   let cursorEl = null;
   let cursorLabelEl = null;
   const CURSOR_POSITION_KEY = '__gcbAgentCursorPosition';
@@ -29,58 +35,166 @@
   let lastAutoPointAt = 0;
   let lastAutoPointElement = null;
 
-  function buildFaviconPng() {
+  const ICON_LINK_SELECTOR =
+    'link[rel="icon"], link[rel="shortcut icon"], link[rel="apple-touch-icon"], link[rel="mask-icon"], link[rel*="icon"]';
+  const CURSOR_PATH =
+    'M2.25 1.75v24.1l6.05-5.12 4.15 9.02 4.05-1.88-4.1-8.9h8.05L2.25 1.75Z';
+
+  function isOurs(el) {
+    return el?.dataset?.gcb === '1' || el?.id === 'gcb-agent-favicon' || el?.id === 'gcb-agent-favicon-shortcut';
+  }
+
+  function pickOriginalFaviconHref(links) {
+    const scored = links
+      .map((el) => {
+        const rel = (el.getAttribute('rel') || '').toLowerCase();
+        const href = el.href || el.getAttribute('href') || '';
+        if (!href) return null;
+        const sizes = (el.getAttribute('sizes') || '').toLowerCase();
+        let score = 0;
+        if (rel.includes('apple-touch') || rel.includes('mask-icon')) score -= 20;
+        if (/\b32x32\b/.test(sizes)) score += 40;
+        else if (/\b48x48\b/.test(sizes)) score += 30;
+        else if (/\b16x16\b/.test(sizes)) score += 25;
+        else if (/\b64x64\b/.test(sizes) || /\b96x96\b/.test(sizes)) score += 15;
+        if (rel === 'icon' || rel.split(/\s+/).includes('icon')) score += 10;
+        if (/\.ico(\?|$)/i.test(href)) score += 5;
+        return { href, score };
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.score - a.score);
+    return scored[0]?.href || new URL('/favicon.ico', location.href).href;
+  }
+
+  function snapshotOriginalIcons() {
+    const links = [...document.querySelectorAll(ICON_LINK_SELECTOR)].filter((el) => !isOurs(el));
+    if (!links.length) {
+      if (!originalFaviconHref) originalFaviconHref = new URL('/favicon.ico', location.href).href;
+      return;
+    }
+    const href = pickOriginalFaviconHref(links);
+    if (href === originalFaviconHref && originalIconSnapshots.length) return;
+    originalFaviconHref = href;
+    originalIconSnapshots = links.map((el) => ({
+      rel: el.getAttribute('rel') || 'icon',
+      href: el.href || el.getAttribute('href') || '',
+      type: el.getAttribute('type') || '',
+      sizes: el.getAttribute('sizes') || '',
+    }));
+    faviconHref = null;
+    faviconBuild = null;
+    faviconGeneration += 1;
+  }
+
+  function drawWashedOriginal(ctx, image, size) {
+    const iw = image.width || size;
+    const ih = image.height || size;
+    if (!iw || !ih) return;
+    const scale = Math.max(size / iw, size / ih);
+    const dw = iw * scale;
+    const dh = ih * scale;
+    const dx = (size - dw) / 2;
+    const dy = (size - dh) / 2;
+    ctx.save();
+    ctx.globalAlpha = 0.52;
+    ctx.drawImage(image, dx, dy, dw, dh);
+    ctx.restore();
+    ctx.fillStyle = 'rgba(255,255,255,0.38)';
+    ctx.fillRect(0, 0, size, size);
+  }
+
+  function drawCursorOverlay(ctx, size) {
+    const path = new Path2D(CURSOR_PATH);
+    const scale = size / 34;
+    ctx.save();
+    ctx.translate(size * 0.16, size * 0.1);
+    ctx.scale(scale, scale);
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 3.1;
+    ctx.stroke(path);
+    ctx.fillStyle = '#111';
+    ctx.fill(path);
+    ctx.restore();
+  }
+
+  async function loadFaviconImage(url) {
+    if (url.startsWith('data:')) {
+      return await new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error('favicon data image failed'));
+        img.src = url;
+      });
+    }
+    const sameOrigin = (() => {
+      try {
+        return new URL(url, location.href).origin === location.origin;
+      } catch {
+        return false;
+      }
+    })();
+    const res = await fetch(url, {
+      credentials: sameOrigin ? 'include' : 'omit',
+      cache: 'force-cache',
+    });
+    if (!res.ok) throw new Error(`favicon ${res.status}`);
+    const blob = await res.blob();
     try {
-      const size = 64;
-      const c = document.createElement('canvas');
-      c.width = size;
-      c.height = size;
-      const ctx = c.getContext('2d');
-      if (!ctx) return null;
-
-      // transparent bg so it looks like a real tab icon
-      ctx.clearRect(0, 0, size, size);
-
-      // Codex-like dark filled cursor (arrow pointer)
-      // Classic OS cursor shape, dark charcoal
-      ctx.save();
-      ctx.translate(10, 8);
-      ctx.beginPath();
-      // tip at top-left
-      ctx.moveTo(2, 2);
-      ctx.lineTo(2, 42);
-      ctx.lineTo(12, 32);
-      ctx.lineTo(20, 48);
-      ctx.lineTo(26, 45);
-      ctx.lineTo(18, 29);
-      ctx.lineTo(34, 29);
-      ctx.closePath();
-
-      // fill dark
-      ctx.fillStyle = '#2f2f2f';
-      ctx.fill();
-      // subtle light edge so it reads on dark tab bars
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = '#5a5a5a';
-      ctx.stroke();
-      // soft inner highlight on left edge (like Codex)
-      ctx.beginPath();
-      ctx.moveTo(4, 6);
-      ctx.lineTo(4, 36);
-      ctx.strokeStyle = 'rgba(255,255,255,0.12)';
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-      ctx.restore();
-
-      return c.toDataURL('image/png');
+      return await createImageBitmap(blob);
     } catch {
-      return null;
+      const objUrl = URL.createObjectURL(blob);
+      try {
+        return await new Promise((resolve, reject) => {
+          const img = new Image();
+          img.onload = () => resolve(img);
+          img.onerror = () => reject(new Error('favicon image failed'));
+          img.src = objUrl;
+        });
+      } finally {
+        URL.revokeObjectURL(objUrl);
+      }
     }
   }
 
+  async function buildFaviconPng() {
+    const size = 64;
+    const c = document.createElement('canvas');
+    c.width = size;
+    c.height = size;
+    const ctx = c.getContext('2d');
+    if (!ctx) return null;
+    ctx.clearRect(0, 0, size, size);
+
+    if (originalFaviconHref) {
+      try {
+        const image = await loadFaviconImage(originalFaviconHref);
+        drawWashedOriginal(ctx, image, size);
+        image.close?.();
+      } catch {
+        // No original (CORS / 404) — cursor-only, same as before.
+      }
+    }
+    drawCursorOverlay(ctx, size);
+    return c.toDataURL('image/png');
+  }
+
   function ensureFaviconHref() {
-    if (!faviconHref) faviconHref = buildFaviconPng();
-    return faviconHref;
+    if (faviconHref) return Promise.resolve(faviconHref);
+    if (!faviconBuild) {
+      const gen = faviconGeneration;
+      faviconBuild = buildFaviconPng()
+        .then((href) => {
+          if (gen !== faviconGeneration) return ensureFaviconHref();
+          faviconHref = href;
+          return href;
+        })
+        .finally(() => {
+          faviconBuild = null;
+        });
+    }
+    return faviconBuild;
   }
 
   const CURSOR_TRANSITION_MS = 420;
@@ -348,56 +462,92 @@
     });
   }
 
-  function applyFavicon() {
-    if (!enabled || applyingFavicon) return;
-    const href = ensureFaviconHref();
+  function installFaviconLinks(href) {
     if (!href || !document.head) return;
+    document.querySelectorAll(ICON_LINK_SELECTOR).forEach((el) => {
+      if (isOurs(el)) return;
+      try {
+        el.remove();
+      } catch {
+        try {
+          el.href = href;
+        } catch {}
+      }
+    });
+
+    let link = document.getElementById('gcb-agent-favicon');
+    if (!link) {
+      link = document.createElement('link');
+      link.id = 'gcb-agent-favicon';
+      link.dataset.gcb = '1';
+      link.rel = 'icon';
+      link.type = 'image/png';
+      link.sizes = '32x32';
+    }
+    if (link.getAttribute('href') !== href) link.setAttribute('href', href);
+    if (link.parentNode !== document.head || document.head.firstChild !== link) {
+      if (link.parentNode) link.parentNode.removeChild(link);
+      document.head.insertBefore(link, document.head.firstChild);
+    }
+
+    let link2 = document.getElementById('gcb-agent-favicon-shortcut');
+    if (!link2) {
+      link2 = document.createElement('link');
+      link2.id = 'gcb-agent-favicon-shortcut';
+      link2.dataset.gcb = '1';
+      link2.rel = 'shortcut icon';
+      link2.type = 'image/png';
+    }
+    if (link2.getAttribute('href') !== href) link2.setAttribute('href', href);
+    if (!link2.parentNode) {
+      document.head.insertBefore(link2, document.head.firstChild);
+    }
+  }
+
+  async function applyFavicon() {
+    if (!enabled) return;
+    if (applyingFavicon) {
+      applyFaviconQueued = true;
+      return;
+    }
     applyingFavicon = true;
     try {
-      document
-        .querySelectorAll(
-          'link[rel="icon"], link[rel="shortcut icon"], link[rel="apple-touch-icon"], link[rel="mask-icon"], link[rel*="icon"]'
-        )
-        .forEach((el) => {
-          if (el.dataset && el.dataset.gcb === '1') return;
-          try {
-            el.remove();
-          } catch {
-            try {
-              el.href = href;
-            } catch {}
-          }
-        });
+      snapshotOriginalIcons();
+      const href = await ensureFaviconHref();
+      if (!enabled || !href) return;
+      installFaviconLinks(href);
+    } catch {
+    } finally {
+      applyingFavicon = false;
+      if (applyFaviconQueued && enabled) {
+        applyFaviconQueued = false;
+        applyFavicon();
+      }
+    }
+  }
 
-      let link = document.getElementById('gcb-agent-favicon');
-      if (!link) {
-        link = document.createElement('link');
-        link.id = 'gcb-agent-favicon';
-        link.dataset.gcb = '1';
-        link.rel = 'icon';
-        link.type = 'image/png';
-        link.sizes = '32x32';
-      }
-      if (link.getAttribute('href') !== href) link.setAttribute('href', href);
-      if (link.parentNode !== document.head || document.head.firstChild !== link) {
-        if (link.parentNode) link.parentNode.removeChild(link);
-        document.head.insertBefore(link, document.head.firstChild);
-      }
-
-      let link2 = document.getElementById('gcb-agent-favicon-shortcut');
-      if (!link2) {
-        link2 = document.createElement('link');
-        link2.id = 'gcb-agent-favicon-shortcut';
-        link2.dataset.gcb = '1';
-        link2.rel = 'shortcut icon';
-        link2.type = 'image/png';
-      }
-      if (link2.getAttribute('href') !== href) link2.setAttribute('href', href);
-      if (!link2.parentNode) {
-        document.head.insertBefore(link2, document.head.firstChild);
+  function restoreFavicon() {
+    applyingFavicon = true;
+    try {
+      document.getElementById('gcb-agent-favicon')?.remove();
+      document.getElementById('gcb-agent-favicon-shortcut')?.remove();
+      if (document.head) {
+        for (const snap of originalIconSnapshots) {
+          if (!snap.href) continue;
+          const link = document.createElement('link');
+          link.rel = snap.rel;
+          link.href = snap.href;
+          if (snap.type) link.type = snap.type;
+          if (snap.sizes) link.setAttribute('sizes', snap.sizes);
+          document.head.appendChild(link);
+        }
       }
     } catch {}
     applyingFavicon = false;
+    faviconHref = null;
+    faviconBuild = null;
+    originalFaviconHref = null;
+    originalIconSnapshots = [];
   }
 
   function startGuards() {
@@ -463,6 +613,7 @@
       keepCursorVisible();
     } else {
       stopGuards();
+      restoreFavicon();
       detachPageListeners();
       interactionObserver?.disconnect();
       interactionObserver = null;
