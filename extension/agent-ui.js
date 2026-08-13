@@ -1,5 +1,5 @@
 /**
- * Forge Design — dark cursor favicon + subtle top glow bar
+ * Forge Design — dark cursor favicon + visible automation pointer
  */
 (function () {
   if (window.__gcbAgentUi) return;
@@ -10,7 +10,6 @@
   let faviconTimer = null;
   let headObserver = null;
   let applyingFavicon = false;
-  let scanEl = null;
   let cursorEl = null;
   let cursorLabelEl = null;
   const CURSOR_POSITION_KEY = '__gcbAgentCursorPosition';
@@ -82,25 +81,6 @@
   function ensureFaviconHref() {
     if (!faviconHref) faviconHref = buildFaviconPng();
     return faviconHref;
-  }
-
-  function ensureScan() {
-    if (scanEl && document.documentElement.contains(scanEl)) return;
-    const mount = document.documentElement || document.body;
-    scanEl = document.createElement('div');
-    scanEl.id = 'gcb-agent-scan';
-    scanEl.setAttribute('aria-hidden', 'true');
-    mount.appendChild(scanEl);
-  }
-
-  function showShimmer(on) {
-    // soft L→R gauze sweep (phone-AI demo style)
-    if (on) {
-      ensureScan();
-      scanEl.style.display = 'block';
-    } else if (scanEl) {
-      scanEl.style.display = 'none';
-    }
   }
 
   const CURSOR_TRANSITION_MS = 420;
@@ -307,7 +287,7 @@
     if (window.__gcbBridgeClicking) return;
     const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
     const rawTarget = path.find((node) => node instanceof Element) || event.target;
-    if (!(rawTarget instanceof Element) || rawTarget.closest?.('#gcb-agent-cursor, #gcb-agent-scan')) return;
+    if (!(rawTarget instanceof Element) || rawTarget.closest?.('#gcb-agent-cursor')) return;
     const el = rawTarget.closest(
       'a[href], button, input, select, textarea, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="option"], [data-testid]'
     ) || rawTarget;
@@ -337,7 +317,7 @@
   }
 
   function pointAtStateElement(el) {
-    if (!enabled || !(el instanceof Element) || el.closest?.('#gcb-agent-cursor, #gcb-agent-scan')) return;
+    if (!enabled || !(el instanceof Element) || el.closest?.('#gcb-agent-cursor')) return;
     const rect = el.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return;
     const now = performance.now();
@@ -421,7 +401,6 @@
   }
 
   function startGuards() {
-    showShimmer(true);
     applyFavicon();
     if (!headObserver && document.head) {
       headObserver = new MutationObserver(() => {
@@ -443,7 +422,6 @@
   }
 
   function stopGuards() {
-    showShimmer(false);
     if (headObserver) {
       headObserver.disconnect();
       headObserver = null;
@@ -492,12 +470,6 @@
         cursorEl.classList.remove('gcb-agent-cursor-visible');
         // Keep node; only hide. Next move re-shows it.
         cursorEl.style.setProperty('opacity', '0', 'important');
-      }
-      if (scanEl) {
-        try {
-          scanEl.remove();
-        } catch {}
-        scanEl = null;
       }
     }
   }
