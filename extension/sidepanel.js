@@ -14,6 +14,8 @@ const sessionEmpty = document.getElementById('sessionEmpty');
 const sessionSearch = document.getElementById('sessionSearch');
 const moreBtn = document.getElementById('moreBtn');
 const moreMenu = document.getElementById('moreMenu');
+const bridgeSwitch = document.getElementById('bridgeSwitch');
+const bridgeState = document.getElementById('bridgeState');
 const dirList = document.getElementById('dirList');
 const dirNow = document.getElementById('dirNow');
 const dirForm = document.getElementById('dirForm');
@@ -577,6 +579,12 @@ clearPickBtn.addEventListener('click', (event) => {
   renderPickChip();
 });
 
+async function refreshBridgeSwitch() {
+  const ok = await checkBridge();
+  bridgeSwitch.setAttribute('aria-checked', ok ? 'true' : 'false');
+  bridgeState.textContent = ok ? `已开启 · 127.0.0.1:${port}` : '已停止。终端再跑一次安装命令即可启动';
+}
+
 moreBtn.addEventListener('click', async (event) => {
   event.stopPropagation();
   menu.hidden = true;
@@ -584,10 +592,33 @@ moreBtn.addEventListener('click', async (event) => {
   moreMenu.hidden = !opening;
   if (!opening) return;
   syncMoreMenu();
+  refreshBridgeSwitch();
   try {
     await refreshDirectories();
     syncMoreMenu();
   } catch {}
+});
+
+bridgeSwitch.addEventListener('click', async (event) => {
+  event.stopPropagation();
+  const on = bridgeSwitch.getAttribute('aria-checked') === 'true';
+  if (!on) {
+    bridgeState.textContent = '扩展无法直接拉起本机服务。终端再跑一次安装命令即可启动';
+    return;
+  }
+  try {
+    await api('/shutdown', { method: 'POST', body: '{}' });
+  } catch {}
+  for (let i = 0; i < 12; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 160));
+    if (!(await checkBridge())) break;
+  }
+  if (await checkBridge()) {
+    bridgeSwitch.setAttribute('aria-checked', 'true');
+    bridgeState.textContent = '开机项把它又拉起来了。再跑一次安装命令后，开关就能停住';
+    return;
+  }
+  await refreshBridgeSwitch();
 });
 
 dirForm.addEventListener('submit', async (event) => {

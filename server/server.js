@@ -217,6 +217,13 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${HOST}:${PORT}`);
 
   // Health is open (no secrets)
+  if (req.method === 'POST' && url.pathname === '/shutdown') {
+    if (!checkAuth(req)) return unauthorized(res);
+    json(res, 200, { ok: true });
+    setTimeout(() => process.exit(0), 80);
+    return;
+  }
+
   if (req.method === 'GET' && url.pathname === '/health') {
     return json(res, 200, {
       status: 'ok',

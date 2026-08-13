@@ -83,7 +83,10 @@ if [ "$(uname -s)" = "Darwin" ]; then
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
-  <true/>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
   <key>StandardOutPath</key>
   <string>${log_dir}/bridge.out.log</string>
   <key>StandardErrorPath</key>
