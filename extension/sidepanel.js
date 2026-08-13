@@ -581,7 +581,7 @@ clearPickBtn.addEventListener('click', (event) => {
 
 async function refreshBridgeSwitch() {
   const ok = await checkBridge();
-  bridgeSwitch.setAttribute('aria-checked', ok ? 'true' : 'false');
+  bridgeSwitch.hidden = !ok;
   bridgeState.textContent = ok ? `已开启 · 127.0.0.1:${port}` : '已停止。终端再跑一次安装命令即可启动';
 }
 
@@ -601,11 +601,6 @@ moreBtn.addEventListener('click', async (event) => {
 
 bridgeSwitch.addEventListener('click', async (event) => {
   event.stopPropagation();
-  const on = bridgeSwitch.getAttribute('aria-checked') === 'true';
-  if (!on) {
-    bridgeState.textContent = '扩展无法直接拉起本机服务。终端再跑一次安装命令即可启动';
-    return;
-  }
   try {
     await api('/shutdown', { method: 'POST', body: '{}' });
   } catch {}
@@ -614,8 +609,8 @@ bridgeSwitch.addEventListener('click', async (event) => {
     if (!(await checkBridge())) break;
   }
   if (await checkBridge()) {
-    bridgeSwitch.setAttribute('aria-checked', 'true');
-    bridgeState.textContent = '开机项把它又拉起来了。再跑一次安装命令后，开关就能停住';
+    bridgeSwitch.hidden = false;
+    bridgeState.textContent = '开机项把它又拉起来了。再跑一次安装命令后，关闭就能停住';
     return;
   }
   await refreshBridgeSwitch();
