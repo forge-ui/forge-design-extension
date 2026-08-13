@@ -5,10 +5,10 @@
 ## 架构
 
 ```
-AI / CLI  --HTTP-->  本机 server(:3847)  --WebSocket-->  Chrome 插件  -->  当前页 / 后台页签
+AI、CLI  --HTTP-->  本机 server(:3847)  --WebSocket-->  Chrome 插件  -->  当前页、后台页签
 ```
 
-**静默模式（默认）**：所有 `goto` / 点击 / 填表都在专用 agent 页签后台执行，你正在用的页签保持在前台。  
+**静默模式（默认）**：所有 `goto`、点击、填表都在专用 agent 页签后台执行，你正在用的页签保持在前台。  
 需要前台时显式传 `foreground: true` 或命令 `focus`。
 
 ## 安装
@@ -29,7 +29,7 @@ curl -fsSL https://raw.githubusercontent.com/forge-ui/forge-design-extension/mai
 ./install.sh
 ```
 
-可选：把项目 skill 装到本机 Grok，让对话时自动带上点选/改页面的用法：
+可选：把项目 skill 装到本机 Grok，让对话时自动带上点选、改页面的用法：
 
 ```bash
 ./install-skill.sh
@@ -57,7 +57,7 @@ curl -fsSL https://raw.githubusercontent.com/forge-ui/forge-design-extension/mai
 1. 打开要改的页面
 2. 在侧边栏点「选择以编辑」
 3. 点击页面上的目标（Esc 取消）
-4. Grok / CLI 读取刚才选中的元素：
+4. Grok、CLI 读取刚才选中的元素：
 
 ```bash
 cd server
@@ -79,7 +79,7 @@ npm run cli -- snapshot
 
 | 命令 | 作用 |
 |------|------|
-| `status` | 连接状态 / 当前标签 |
+| `status` | 连接状态、当前标签 |
 | `tabs` | 所有标签 |
 | `goto <url>` | 当前标签跳转 |
 | `snapshot` | 页面文本 + 可点元素 |

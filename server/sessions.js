@@ -451,7 +451,7 @@ export function buildGrokPrompt({ text, page, screenshotPath, pick }) {
     parts.push('请先用 read_file 打开这张截图，再根据页面实际情况回答。');
   }
   if (pick?.selector) {
-    parts.push('用户选中了这个元素，请把它当作这次要改/要看的目标：');
+    parts.push('用户选中了这个元素，请把它当作这次要改、要看的目标：');
     parts.push(`selector: ${pick.selector}`);
     parts.push(`tag: ${pick.tag || ''}`);
     parts.push(`text: ${pick.text || ''}`);
