@@ -25,6 +25,8 @@ scroll [y]
 eval <expression>
 last-pick
 start-pick
+last-place
+start-place
 raw <json>
 ```
 
@@ -52,6 +54,12 @@ Wait for the user to pick an element on the current page (up to 90s):
 
 ```sh
 scripts/bridge.sh start-pick
+```
+
+Read the last Forge block(s) the user confirmed onto the page (after 写入源码). `places` is the full numbered list; `place` is the first item for compatibility; `layout` is the spatial map (`relativeToIndex`, `position`, preview `rect`):
+
+```sh
+scripts/bridge.sh last-place
 ```
 
 Use the active user tab only when explicitly requested:

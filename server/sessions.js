@@ -439,7 +439,7 @@ function cryptoRandom() {
   return Math.random().toString(36).slice(2, 8);
 }
 
-export function buildGrokPrompt({ text, page, screenshotPath, pick }) {
+export function buildGrokPrompt({ text, page, screenshotPath, pick, place, places }) {
   const parts = [];
   if (page?.url) {
     parts.push('用户当前正在看这个 Chrome 页面：');
@@ -450,7 +450,80 @@ export function buildGrokPrompt({ text, page, screenshotPath, pick }) {
     parts.push(`viewport screenshot: ${screenshotPath}`);
     parts.push('请先用 read_file 打开这张截图，再根据页面实际情况回答。');
   }
-  if (pick?.selector) {
+  const batch = Array.isArray(places) && places.length
+    ? places
+    : Array.isArray(place?.places) && place.places.length
+      ? place.places
+      : place?.component
+        ? [place]
+        : [];
+  if (batch.length) {
+    const describe = (item, index) => {
+      const component = item.component || {};
+      const exports = [component.exportName, ...(component.extras || [])].filter(Boolean);
+      const allowed = { before: 'before', after: 'after', inside: 'inside', left: 'left', right: 'right' };
+      const position = allowed[item.position] || 'after';
+      const n = item.index || index + 1;
+      const lines = [
+        `#${n}`,
+        `component: ${component.name || ''}`,
+        `id: ${component.id || ''}`,
+        `import from: @forge-ui-official/core`,
+        `exports: ${exports.join(', ') || component.name || ''}`,
+      ];
+      if (component.variant && component.variant !== 'default') {
+        lines.push(`variant: ${component.variant}`);
+      }
+      if (component.variantHint) {
+        lines.push(`props hint: ${component.variantHint}`);
+      }
+      lines.push(`position: ${position}`);
+      if (item.relativeToIndex) {
+        lines.push(`relative to: #${item.relativeToIndex}`);
+        lines.push(item.position === 'inside'
+          ? 'anchor: nest inside that placement'
+          : 'anchor: previous placement, not a new page region');
+      } else if (item.pick?.selector) {
+        lines.push(`anchor selector: ${item.pick.selector}`);
+        lines.push(`anchor tag: ${item.pick.tag || ''}`);
+        lines.push(`anchor text: ${item.pick.text || ''}`);
+        lines.push(`anchor testid: ${item.pick.testid || ''}`);
+      }
+      if (item.rect && (item.rect.w || item.rect.h)) {
+        lines.push(`preview rect: ${item.rect.x},${item.rect.y} ${item.rect.w}x${item.rect.h}`);
+      }
+      if (item.slot && (item.slot.row >= 0 || item.slot.col >= 0 || item.slot.text)) {
+        lines.push(`inside slot: row ${item.slot.row} col ${item.slot.col} text ${item.slot.text || ''} tag ${item.slot.tag || ''}`);
+      }
+      return lines.join('\n');
+    };
+    if (batch.length > 1) {
+      parts.push('用户要把多个 Forge 组件一次性写进当前页面。编号与页面上的预览块一致。必须在这一轮把全部组件都写入源码，不要只写第一个。');
+    } else {
+      parts.push('用户要把一个 Forge 组件放到当前页面上：');
+    }
+    parts.push(...batch.map((item, index) => describe(item, index)));
+    const composition = batch.map((item, index) => {
+      const n = item.index || index + 1;
+      const name = item.component?.name || item.component?.exportName || 'Forge';
+      if (item.relativeToIndex && item.position === 'inside') {
+        return `#${n} ${name} 叠在 #${item.relativeToIndex} 内部`;
+      }
+      if (item.relativeToIndex) {
+        return `#${n} ${name} 在 #${item.relativeToIndex} 的 ${item.position || 'after'}`;
+      }
+      return `#${n} ${name} 在锚点 ${item.pick?.selector || ''} 的 ${item.position || 'after'}`;
+    });
+    parts.push('版式（必须按这个相对关系还原，不要擅自改成一列）：');
+    parts.push(composition.join('\n'));
+    parts.push('页面上刚插入的 Forge 复刻块是插件 overlay，不是源码。用户点「写入源码」之后才要改文件。');
+    parts.push('如果 position 是 left 或 right，写成同一行的左/右兄弟（flex row）。before / after 是上方 / 下方。');
+    parts.push('如果 position 是 inside，这一块是叠在宿主内部的内容，不要写成宿主旁边的兄弟。DataTable / FullWidthTable 上的 CellText 或其它组件，写进对应单元格 / columns.render，而不是表格下面另起一块。');
+    parts.push('如果 relative to 指向另一块预览，这一块要贴着那一块写，而不是再去找一个新的页面区域。');
+    parts.push('如果当前 cwd 是本地 Forge / Next 应用，在对应页面源码写入真实 import 与 JSX，不要只改 DOM。');
+    parts.push('如果当前页不是这个仓库跑起来的页面，不要假装已经插入；说明无法写入当前页，并指出应改哪个本地文件。');
+    parts.push('不要手搓等价 UI。只用 @forge-ui-official/core 导出的组件。');
+  } else if (pick?.selector) {
     parts.push('用户选中了这个元素，请把它当作这次要改、要看的目标：');
     parts.push(`selector: ${pick.selector}`);
     parts.push(`tag: ${pick.tag || ''}`);

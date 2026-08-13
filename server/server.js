@@ -30,6 +30,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 const STATE_PATH = path.join(ROOT, '.bridge-state.json');
 const PICK_PATH = path.join(ROOT, '.bridge-pick.json');
+const PLACE_PATH = path.join(ROOT, '.bridge-place.json');
 const PORT = Number(process.env.BRIDGE_PORT || 3847);
 const HOST = process.env.BRIDGE_HOST || '127.0.0.1';
 
@@ -49,9 +50,14 @@ let extensionSocket = null;
 const pending = new Map();
 let commandSeq = 0;
 let lastPick = null;
+let lastPlace = null;
 
 try {
   lastPick = JSON.parse(fs.readFileSync(PICK_PATH, 'utf8'));
+} catch {}
+
+try {
+  lastPlace = JSON.parse(fs.readFileSync(PLACE_PATH, 'utf8'));
 } catch {}
 
 function savePick(pick) {
@@ -62,6 +68,28 @@ function savePick(pick) {
   } catch (err) {
     console.error('[bridge] failed to persist pick:', err.message);
   }
+}
+
+function savePlace(place) {
+  lastPlace = place || null;
+  try {
+    if (place) fs.writeFileSync(PLACE_PATH, JSON.stringify(place, null, 2));
+    else if (fs.existsSync(PLACE_PATH)) fs.unlinkSync(PLACE_PATH);
+  } catch (err) {
+    console.error('[bridge] failed to persist place:', err.message);
+  }
+  const pick = place?.pick || place?.place?.pick || place?.places?.[0]?.pick;
+  if (pick) savePick(pick);
+}
+
+function placeResponse(stored) {
+  if (!stored) return { place: null, places: [], layout: null };
+  const places = Array.isArray(stored.places)
+    ? stored.places
+    : stored.component
+      ? [stored]
+      : [];
+  return { place: stored.place || stored, places, layout: stored.layout || null };
 }
 
 function json(res, code, body) {
@@ -114,12 +142,23 @@ async function handleGrokTurn(req, res, { session } = {}) {
   if (!text) return json(res, 400, { error: 'text required' });
   const cwd = payload.cwd || session?.cwd || os.homedir();
   const screenshotPath = writeScreenshotFile(payload.screenshot);
+  const places = Array.isArray(payload.places) ? payload.places : payload.place?.places;
   const prompt = buildGrokPrompt({
     text,
     page: payload.page,
     screenshotPath,
     pick: payload.pick,
+    place: payload.place,
+    places,
   });
+  if (places?.length || payload.place?.component) {
+    savePlace({
+      ...(payload.place || {}),
+      places: places?.length ? places : undefined,
+      layout: payload.layout || undefined,
+      placedAt: new Date().toISOString(),
+    });
+  }
   const stream = payload.stream === true || String(req.headers.accept || '').includes('text/event-stream');
   if (!stream) {
     try {
@@ -243,6 +282,11 @@ const server = http.createServer(async (req, res) => {
     return json(res, 200, { pick: lastPick });
   }
 
+  if (req.method === 'GET' && url.pathname === '/place') {
+    if (!checkAuth(req)) return unauthorized(res);
+    return json(res, 200, placeResponse(lastPlace));
+  }
+
   if (req.method === 'GET' && url.pathname === '/status') {
     if (!checkAuth(req)) return unauthorized(res);
     try {
@@ -346,13 +390,20 @@ const server = http.createServer(async (req, res) => {
     if (command === 'last-pick' || command === 'lastPick') {
       return json(res, 200, { pick: lastPick });
     }
+    if (command === 'last-place' || command === 'lastPlace') {
+      return json(res, 200, placeResponse(lastPlace));
+    }
     try {
       const timeoutMs =
-        command === 'start-pick' || command === 'startPick'
+        command === 'start-pick' ||
+        command === 'startPick' ||
+        command === 'start-place' ||
+        command === 'startPlace'
           ? payload.timeoutMs || 90000
           : payload.timeoutMs || 30000;
       const result = await runCommand(command, args, timeoutMs);
       if (result?.pick) savePick(result.pick);
+      if (result?.place && !result.preview) savePlace(result.place);
       return json(res, result.error ? 500 : 200, result);
     } catch (err) {
       return json(res, 503, { error: err.message });
@@ -368,6 +419,7 @@ const server = http.createServer(async (req, res) => {
         '/token',
         '/status',
         '/pick',
+        '/place',
         '/sessions',
         'POST /sessions',
         'POST /command',
@@ -426,6 +478,11 @@ wss.on('connection', (socket) => {
 
     if (msg.type === 'pick' && msg.pick) {
       savePick(msg.pick);
+      return;
+    }
+
+    if (msg.type === 'place' && msg.place) {
+      savePlace(msg.place);
       return;
     }
 

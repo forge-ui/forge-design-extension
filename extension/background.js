@@ -23,6 +23,8 @@ let actionLog = [];
 let agentTabId = null;
 /** Last element the user pointed at in picker mode */
 let lastPick = null;
+/** Last Forge block the user placed onto the page */
+let lastPlace = null;
 
 function logAction(entry) {
   actionLog.unshift({ ...entry, ts: Date.now() });
@@ -31,11 +33,12 @@ function logAction(entry) {
 }
 
 async function loadConfig() {
-  const data = await chrome.storage.local.get(['port', 'token', 'agentTabId', 'lastPick']);
+  const data = await chrome.storage.local.get(['port', 'token', 'agentTabId', 'lastPick', 'lastPlace']);
   port = data.port || DEFAULT_PORT;
   token = data.token || null;
   agentTabId = data.agentTabId || null;
   lastPick = data.lastPick || null;
+  lastPlace = data.lastPlace || null;
 }
 
 async function saveConfig(partial) {
@@ -57,6 +60,7 @@ function broadcastStatus() {
         hasToken: !!token,
         lastError,
         lastPick,
+        lastPlace,
         log: actionLog.slice(0, 20),
       },
     })
@@ -72,6 +76,49 @@ async function saveLastPick(pick) {
     } catch {}
   }
   chrome.runtime.sendMessage({ type: 'lastPick', pick }).catch(() => {});
+}
+
+async function saveLastPlace(place) {
+  lastPlace = place;
+  await chrome.storage.local.set({ lastPlace: place });
+  const pick = place?.pick || place?.place?.pick || place?.places?.[0]?.pick;
+  if (pick) await saveLastPick(pick);
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    try {
+      ws.send(JSON.stringify({ type: 'place', place }));
+    } catch {}
+  }
+  chrome.runtime.sendMessage({ type: 'lastPlace', place }).catch(() => {});
+}
+
+function pageKey(url) {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return url || '';
+  }
+}
+
+async function savePendingPlaces(tabId, payload) {
+  if (!tabId) return;
+  try {
+    const data = await chrome.storage.session.get('pendingPlacesByTab');
+    const map = data.pendingPlacesByTab || {};
+    if (payload?.places?.length) map[String(tabId)] = payload;
+    else delete map[String(tabId)];
+    await chrome.storage.session.set({ pendingPlacesByTab: map });
+  } catch {}
+}
+
+async function loadPendingPlaces(tabId) {
+  if (!tabId) return null;
+  try {
+    const data = await chrome.storage.session.get('pendingPlacesByTab');
+    return data.pendingPlacesByTab?.[String(tabId)] || null;
+  } catch {
+    return null;
+  }
 }
 
 function isRestrictedUrl(url) {
@@ -116,6 +163,27 @@ async function startPickerOnUserTab() {
     return { tabId: tab.id, url: tab.url, ...result };
   } catch (err) {
     return { error: err.message || 'Picker failed' };
+  }
+}
+
+async function startPlaceOnUserTab(component) {
+  const tab = await getUserFacingTab();
+  if (!tab?.id) return { error: 'No active tab' };
+  if (isRestrictedUrl(tab.url)) {
+    return { error: 'Cannot place on this page (chrome:// or similar)' };
+  }
+  const ok = await ensureContentScript(tab.id, { agentUi: false });
+  if (!ok) return { error: 'Cannot inject placer on this page' };
+  try {
+    await chrome.tabs.update(tab.id, { active: true });
+    if (tab.windowId) await chrome.windows.update(tab.windowId, { focused: true });
+  } catch {}
+  try {
+    const result = await chrome.tabs.sendMessage(tab.id, { type: 'place-start', component });
+    if (result?.place && !result.preview) await saveLastPlace(result.place);
+    return { tabId: tab.id, url: tab.url, ...result };
+  } catch (err) {
+    return { error: err.message || 'Place failed' };
   }
 }
 
@@ -287,15 +355,27 @@ async function enableAgentUi(tabId) {
   } catch {}
 }
 
+const CONTENT_SCRIPTS = ['agent-ui.js', 'vendor/forge-palette.js', 'content.js'];
+
 async function ensureContentScript(tabId, opts = {}) {
   const agentUi = opts.agentUi !== false;
   // Prefer ping-first so we do NOT re-inject content.js on every command.
   // Re-injection stacks message listeners and races cursor movement on SPA sites
   // like x.com.
   try {
-    await chrome.tabs.sendMessage(tabId, { type: 'ping' });
-    if (agentUi) await enableAgentUi(tabId);
-    return true;
+    const ping = await chrome.tabs.sendMessage(tabId, { type: 'ping' });
+    if (ping?.ok && !ping.palette) {
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId },
+          files: ['vendor/forge-palette.js'],
+        });
+      } catch {}
+    }
+    if (ping?.ok) {
+      if (agentUi) await enableAgentUi(tabId);
+      return true;
+    }
   } catch {
     // not injected yet (or context invalidated after navigation)
   }
@@ -309,7 +389,7 @@ async function ensureContentScript(tabId, opts = {}) {
   try {
     await chrome.scripting.executeScript({
       target: { tabId },
-      files: ['agent-ui.js', 'content.js'],
+      files: CONTENT_SCRIPTS,
     });
   } catch {
     // page may block scripting
@@ -350,7 +430,7 @@ async function sendToTab(tabId, message) {
     try {
       await chrome.scripting.executeScript({
         target: { tabId },
-        files: ['agent-ui.js', 'content.js'],
+        files: CONTENT_SCRIPTS,
       });
     } catch {}
     try {
@@ -379,6 +459,7 @@ async function handleCommand(command, args) {
           port,
           silent: true,
           lastPick,
+          lastPlace,
           agentTabId: agentTabId || null,
           agentTab: agent
             ? { id: agent.id, url: agent.url, title: agent.title, active: agent.active }
@@ -621,19 +702,41 @@ async function handleCommand(command, args) {
         return startPickerOnUserTab();
       }
 
+      case 'start-place':
+      case 'startPlace': {
+        return startPlaceOnUserTab(args.component || args);
+      }
+
       case 'cancel-pick':
-      case 'cancelPick': {
+      case 'cancelPick':
+      case 'cancel-place':
+      case 'cancelPlace': {
         const tab = await getUserFacingTab();
         if (!tab?.id) return { cancelled: true };
         try {
-          await chrome.tabs.sendMessage(tab.id, { type: 'picker-cancel' });
+          await chrome.tabs.sendMessage(tab.id, { type: 'place-cancel' });
         } catch {}
+        await savePendingPlaces(tab.id, null);
         return { cancelled: true };
       }
 
       case 'last-pick':
       case 'lastPick': {
         return { pick: lastPick };
+      }
+
+      case 'last-place':
+      case 'lastPlace': {
+        const places = Array.isArray(lastPlace?.places)
+          ? lastPlace.places
+          : lastPlace?.component
+            ? [lastPlace]
+            : [];
+        return {
+          place: lastPlace?.place || lastPlace,
+          places,
+          layout: lastPlace?.layout || null,
+        };
       }
 
       // focus element inside page (not browser tab focus)
@@ -713,6 +816,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       hasToken: !!token,
       lastError,
       lastPick,
+      lastPlace,
       agentTabId,
       silent: true,
       log: actionLog.slice(0, 20),
@@ -730,7 +834,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
-  if (msg.type === 'cancelPick') {
+  if (msg.type === 'startPlace') {
+    startPlaceOnUserTab(msg.component).then(sendResponse);
+    return true;
+  }
+
+  if (msg.type === 'cancelPick' || msg.type === 'cancelPlace') {
     handleCommand('cancel-pick', {}).then(sendResponse);
     return true;
   }
@@ -740,8 +849,89 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  if (msg.type === 'getLastPlace') {
+    sendResponse({ place: lastPlace });
+    return true;
+  }
+
   if (msg.type === 'picker-result' && msg.pick) {
     saveLastPick(msg.pick).then(() => sendResponse({ ok: true }));
+    return true;
+  }
+
+  if (msg.type === 'place-preview' && (msg.place || msg.places?.length)) {
+    const tabId = sender.tab?.id;
+    const place = msg.place ? { ...msg.place, tabId } : null;
+    const places = Array.isArray(msg.places)
+      ? msg.places.map((item) => ({ ...item, tabId }))
+      : place
+        ? [place]
+        : [];
+    savePendingPlaces(tabId, {
+      url: sender.tab?.url || places[0]?.url || '',
+      places,
+      layout: msg.layout || null,
+    }).catch(() => {});
+    chrome.runtime.sendMessage({
+      type: 'placePreview',
+      place: places[places.length - 1] || place,
+      places,
+      layout: msg.layout || null,
+    }).catch(() => {});
+    sendResponse({ ok: true, place, places });
+    return true;
+  }
+
+  if (msg.type === 'place-dismiss') {
+    savePendingPlaces(sender.tab?.id, null).catch(() => {});
+    chrome.runtime.sendMessage({ type: 'placeDismiss' }).catch(() => {});
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  if (msg.type === 'place-restore-request') {
+    loadPendingPlaces(sender.tab?.id).then((saved) => {
+      const same = saved?.url && pageKey(saved.url) === pageKey(msg.url || sender.tab?.url || '');
+      sendResponse({ places: same ? saved.places : [] });
+    }).catch(() => sendResponse({ places: [] }));
+    return true;
+  }
+
+  if (msg.type === 'getPendingPlaces') {
+    (async () => {
+      const tab = await getUserFacingTab();
+      const saved = tab?.id ? await loadPendingPlaces(tab.id) : null;
+      sendResponse({ places: saved?.places || [], layout: saved?.layout || null });
+    })();
+    return true;
+  }
+
+  if (msg.type === 'place-result' && msg.place) {
+    saveLastPlace(msg.place).then(() => sendResponse({ ok: true }));
+    return true;
+  }
+
+  if (msg.type === 'commitPlace' && (msg.places?.length || msg.place)) {
+    (async () => {
+      let places = Array.isArray(msg.places) && msg.places.length ? msg.places : [msg.place];
+      let layout = msg.layout || null;
+      const tabId = places[0]?.tabId || msg.place?.tabId || (await getUserFacingTab())?.id;
+      if (tabId) {
+        try {
+          const snap = await chrome.tabs.sendMessage(tabId, { type: 'place-commit' });
+          if (snap?.places?.length) places = snap.places;
+          if (snap?.layout) layout = snap.layout;
+        } catch {}
+        await savePendingPlaces(tabId, null);
+      }
+      await saveLastPlace({
+        places,
+        place: places[0],
+        layout,
+        placedAt: new Date().toISOString(),
+      });
+      sendResponse({ ok: true, places, layout });
+    })();
     return true;
   }
 
@@ -776,6 +966,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 if (chrome.sidePanel?.setPanelBehavior) {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 }
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  savePendingPlaces(tabId, null).catch(() => {});
+});
 
 // Keep service worker from dying forever without reconnect attempts
 chrome.alarms.create('bridge-keepalive', { periodInMinutes: 0.5 });

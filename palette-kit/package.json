@@ -1,0 +1,19 @@
+{
+  "name": "forge-palette-kit",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "@forge-ui-official/core": "file:../../forge/core",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "solar-icon-set": "^2.0.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.1.11",
+    "esbuild": "^0.25.8",
+    "tailwindcss": "^4.1.11"
+  }
+}

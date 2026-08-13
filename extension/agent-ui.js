@@ -1,5 +1,5 @@
 /**
- * Forge Design — Codex-style tab icon (washed original favicon + cursor overlay)
+ * Forge Design — washed original favicon + rounded mouse overlay
  * and a visible automation pointer on the page.
  */
 (function () {
@@ -37,8 +37,11 @@
 
   const ICON_LINK_SELECTOR =
     'link[rel="icon"], link[rel="shortcut icon"], link[rel="apple-touch-icon"], link[rel="mask-icon"], link[rel*="icon"]';
+  // Rounded mouse pointer from the user's icon (1024 viewBox, tip up-left).
   const CURSOR_PATH =
-    'M2.25 1.75v24.1l6.05-5.12 4.15 9.02 4.05-1.88-4.1-8.9h8.05L2.25 1.75Z';
+    'M174.08 113.39264l7.43424 646.56896c0.38912 33.95072 28.11392 61.1584 61.9264 60.76416a61.07136 61.07136 0 0 0 39.38816-15.01696l156.65152-136.36096 159.73376 277.82656c16.90624 29.39904 54.3488 39.4752 83.63008 22.49728l67.11296-38.912c29.2864-16.9728 39.31648-54.57408 22.41024-83.97312l-159.73376-277.82656 196.06016-68.096c31.95392-11.10016 48.896-46.11072 37.84704-78.19776a61.42464 61.42464 0 0 0-26.59328-32.75776L266.56256 59.83232c-29.06624-17.34144-66.63168-7.7312-83.89632 21.45792A61.71648 61.71648 0 0 0 174.08 113.39264z';
+  const CURSOR_SVG =
+    '<svg viewBox="150 40 680 880" width="23" height="30" aria-hidden="true"><path d="M174.08 113.39264l7.43424 646.56896c0.38912 33.95072 28.11392 61.1584 61.9264 60.76416a61.07136 61.07136 0 0 0 39.38816-15.01696l156.65152-136.36096 159.73376 277.82656c16.90624 29.39904 54.3488 39.4752 83.63008 22.49728l67.11296-38.912c29.2864-16.9728 39.31648-54.57408 22.41024-83.97312l-159.73376-277.82656 196.06016-68.096c31.95392-11.10016 48.896-46.11072 37.84704-78.19776a61.42464 61.42464 0 0 0-26.59328-32.75776L266.56256 59.83232c-29.06624-17.34144-66.63168-7.7312-83.89632 21.45792A61.71648 61.71648 0 0 0 174.08 113.39264z" fill="#111" stroke="#fff" stroke-width="72" stroke-linejoin="round" stroke-linecap="round"/></svg>';
 
   function isOurs(el) {
     return el?.dataset?.gcb === '1' || el?.id === 'gcb-agent-favicon' || el?.id === 'gcb-agent-favicon-shortcut';
@@ -86,33 +89,70 @@
     faviconGeneration += 1;
   }
 
+  function roundedRectPath(ctx, x, y, w, h, r) {
+    const rr = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + rr, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rr);
+    ctx.arcTo(x + w, y + h, x, y + h, rr);
+    ctx.arcTo(x, y + h, x, y, rr);
+    ctx.arcTo(x, y, x + w, y, rr);
+    ctx.closePath();
+  }
+
   function drawWashedOriginal(ctx, image, size) {
+    const pad = Math.round(size * 0.1);
+    const x = pad;
+    const y = pad;
+    const w = size - pad * 2;
+    const h = size - pad * 2;
+    const radius = Math.round(size * 0.2);
     const iw = image.width || size;
     const ih = image.height || size;
     if (!iw || !ih) return;
-    const scale = Math.max(size / iw, size / ih);
+
+    ctx.save();
+    roundedRectPath(ctx, x, y, w, h, radius);
+    ctx.shadowColor = 'rgba(59, 130, 246, 0.88)';
+    ctx.shadowBlur = size * 0.28;
+    ctx.fillStyle = 'rgba(59, 130, 246, 0.22)';
+    ctx.fill();
+    ctx.restore();
+
+    ctx.save();
+    roundedRectPath(ctx, x, y, w, h, radius);
+    ctx.clip();
+    const scale = Math.max(w / iw, h / ih);
     const dw = iw * scale;
     const dh = ih * scale;
-    const dx = (size - dw) / 2;
-    const dy = (size - dh) / 2;
-    ctx.save();
     ctx.globalAlpha = 0.52;
-    ctx.drawImage(image, dx, dy, dw, dh);
-    ctx.restore();
+    ctx.drawImage(image, x + (w - dw) / 2, y + (h - dh) / 2, dw, dh);
+    ctx.globalAlpha = 1;
     ctx.fillStyle = 'rgba(255,255,255,0.38)';
-    ctx.fillRect(0, 0, size, size);
+    ctx.fillRect(x, y, w, h);
+    ctx.restore();
+
+    ctx.save();
+    roundedRectPath(ctx, x + 0.6, y + 0.6, w - 1.2, h - 1.2, Math.max(1, radius - 0.4));
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = Math.max(2.5, size * 0.07);
+    ctx.stroke();
+    ctx.restore();
   }
 
   function drawCursorOverlay(ctx, size) {
     const path = new Path2D(CURSOR_PATH);
-    const scale = size / 34;
     ctx.save();
-    ctx.translate(size * 0.16, size * 0.1);
+    const scale = size / 920;
+    ctx.translate(size * 0.08, size * 0.05);
     ctx.scale(scale, scale);
+    ctx.translate(-150, -40);
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
+    ctx.shadowColor = 'rgba(59, 130, 246, 0.8)';
+    ctx.shadowBlur = 140;
     ctx.strokeStyle = '#fff';
-    ctx.lineWidth = 3.1;
+    ctx.lineWidth = 72;
     ctx.stroke(path);
     ctx.fillStyle = '#111';
     ctx.fill(path);
@@ -233,6 +273,8 @@
     const existing = document.getElementById('gcb-agent-cursor');
     if (existing) {
       cursorEl = existing;
+      const arrow = cursorEl.querySelector('.gcb-agent-cursor-arrow');
+      if (arrow) arrow.innerHTML = CURSOR_SVG;
       cursorLabelEl = cursorEl.querySelector('.gcb-agent-cursor-label');
       applyCursorBaseStyles(cursorEl);
       return cursorEl;
@@ -241,7 +283,7 @@
     cursorEl.id = 'gcb-agent-cursor';
     cursorEl.setAttribute('aria-hidden', 'true');
     cursorEl.innerHTML =
-      '<span class="gcb-agent-cursor-arrow"><svg viewBox="0 0 24 32" width="23" height="30" aria-hidden="true"><path d="M2.25 1.75v24.1l6.05-5.12 4.15 9.02 4.05-1.88-4.1-8.9h8.05L2.25 1.75Z" fill="#080808" stroke="#fff" stroke-width="1.8" stroke-linejoin="round"/></svg></span><span class="gcb-agent-cursor-ring"></span><span class="gcb-agent-cursor-label"></span>';
+      `<span class="gcb-agent-cursor-arrow">${CURSOR_SVG}</span><span class="gcb-agent-cursor-ring"></span><span class="gcb-agent-cursor-label"></span>`;
     applyCursorBaseStyles(cursorEl);
     cursorEl.style.setProperty('opacity', '0', 'important');
     cursorEl.style.transform = `translate3d(${cursorX}px, ${cursorY}px, 0)`;
