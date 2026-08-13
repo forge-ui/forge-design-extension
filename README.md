@@ -1,5 +1,9 @@
 # Forge Design
 
+<p align="center">
+  <img src="assets/social-preview.jpg" alt="Forge Design：在真实页面上点选组件，用本地 Grok 改界面" width="100%" />
+</p>
+
 **在真实网页上点选组件，用你本地的 Grok 改界面。**
 
 Pick a component in real Chrome. Local Grok edits it.
