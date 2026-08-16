@@ -204,6 +204,61 @@ body {
   color: var(--fg-grey-700);
 }
 
+.ext-version {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--fg-grey-700);
+}
+
+.update-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 10px 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--fg-violet-100);
+  border-radius: 10px;
+  background: var(--fg-violet-50);
+  color: var(--fg-black);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.update-banner[hidden] {
+  display: none !important;
+}
+
+.update-banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.update-docs {
+  color: var(--fg-violet);
+  text-decoration: none;
+  font-size: 12px;
+}
+
+.update-docs:hover {
+  text-decoration: underline;
+}
+
+.update-dismiss {
+  border: 0;
+  background: transparent;
+  color: var(--fg-grey-700);
+  padding: 0;
+  font: 12px/1 Manrope, ui-sans-serif, system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.update-dismiss:hover {
+  color: var(--fg-black);
+}
+
 .bridge-disconnect {
   flex-shrink: 0;
   border: 0;

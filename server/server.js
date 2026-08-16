@@ -34,6 +34,18 @@ const PLACE_PATH = path.join(ROOT, '.bridge-place.json');
 const PORT = Number(process.env.BRIDGE_PORT || 3847);
 const HOST = process.env.BRIDGE_HOST || '127.0.0.1';
 
+function readJsonFile(filePath) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+const BRIDGE_VERSION = readJsonFile(path.join(__dirname, 'package.json'))?.version || '0.0.0';
+const EXPECTED_EXTENSION_VERSION =
+  readJsonFile(path.join(ROOT, 'extension', 'manifest.json'))?.version || null;
+
 function loadState() {
   try {
     return JSON.parse(fs.readFileSync(STATE_PATH, 'utf8'));
@@ -268,6 +280,8 @@ const server = http.createServer(async (req, res) => {
       status: 'ok',
       extensionConnected: !!(extensionSocket && extensionSocket.readyState === 1),
       port: PORT,
+      version: BRIDGE_VERSION,
+      expectedExtensionVersion: EXPECTED_EXTENSION_VERSION,
     });
   }
 
@@ -413,6 +427,8 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname === '/') {
     return json(res, 200, {
       name: 'forge-design-bridge',
+      version: BRIDGE_VERSION,
+      expectedExtensionVersion: EXPECTED_EXTENSION_VERSION,
       port: PORT,
       endpoints: [
         '/health',
@@ -448,7 +464,14 @@ wss.on('connection', (socket) => {
       if (msg.token && msg.token === state.token) {
         socket.isAuthed = true;
         extensionSocket = socket;
-        socket.send(JSON.stringify({ type: 'auth_ok', token: state.token }));
+        socket.send(
+          JSON.stringify({
+            type: 'auth_ok',
+            token: state.token,
+            version: BRIDGE_VERSION,
+            expectedExtensionVersion: EXPECTED_EXTENSION_VERSION,
+          })
+        );
         console.log('[bridge] extension connected');
         return;
       }
@@ -458,7 +481,14 @@ wss.on('connection', (socket) => {
         // only if no extension currently connected, and bind this token.
         socket.isAuthed = true;
         extensionSocket = socket;
-        socket.send(JSON.stringify({ type: 'auth_ok', token: state.token }));
+        socket.send(
+          JSON.stringify({
+            type: 'auth_ok',
+            token: state.token,
+            version: BRIDGE_VERSION,
+            expectedExtensionVersion: EXPECTED_EXTENSION_VERSION,
+          })
+        );
         console.log('[bridge] extension connected (bootstrap, token issued)');
         return;
       }

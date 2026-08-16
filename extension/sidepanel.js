@@ -1434,6 +1434,96 @@ async function checkBridge() {
   }
 }
 
+const UPDATE_CHECK_URL =
+  'https://raw.githubusercontent.com/forge-ui/forge-design-extension/main/extension/manifest.json';
+const UPDATE_DOCS_URL = 'https://github.com/forge-ui/forge-design-extension';
+const UPDATE_CHECK_MS = 12 * 60 * 60 * 1000;
+
+let pendingUpdateVersion = null;
+
+function compareVersions(left, right) {
+  const a = String(left || '')
+    .split('.')
+    .map((part) => parseInt(part, 10) || 0);
+  const b = String(right || '')
+    .split('.')
+    .map((part) => parseInt(part, 10) || 0);
+  const len = Math.max(a.length, b.length);
+  for (let i = 0; i < len; i += 1) {
+    const da = a[i] || 0;
+    const db = b[i] || 0;
+    if (da > db) return 1;
+    if (da < db) return -1;
+  }
+  return 0;
+}
+
+function localExtensionVersion() {
+  return chrome.runtime.getManifest().version;
+}
+
+function showUpdateBanner(latestVersion) {
+  pendingUpdateVersion = latestVersion;
+  document.getElementById('updateBannerText').textContent = `有新版本 ${latestVersion}`;
+  document.getElementById('updateBannerLink').href = UPDATE_DOCS_URL;
+  document.getElementById('updateBanner').hidden = false;
+}
+
+function hideUpdateBanner() {
+  pendingUpdateVersion = null;
+  document.getElementById('updateBanner').hidden = true;
+}
+
+async function fetchPublishedExtensionVersion() {
+  const stored = await chrome.storage.local.get(['latestExtensionVersion', 'latestExtensionCheckedAt']);
+  const checkedAt = Number(stored.latestExtensionCheckedAt) || 0;
+  if (stored.latestExtensionVersion && Date.now() - checkedAt < UPDATE_CHECK_MS) {
+    return stored.latestExtensionVersion;
+  }
+  const res = await fetch(UPDATE_CHECK_URL, { cache: 'no-store' });
+  if (!res.ok) return stored.latestExtensionVersion || null;
+  const data = await res.json();
+  const version = typeof data.version === 'string' ? data.version : null;
+  if (!version) return stored.latestExtensionVersion || null;
+  await chrome.storage.local.set({
+    latestExtensionVersion: version,
+    latestExtensionCheckedAt: Date.now(),
+  });
+  return version;
+}
+
+async function refreshUpdateBanner() {
+  const current = localExtensionVersion();
+  const extVersionEl = document.getElementById('extVersion');
+  if (extVersionEl) extVersionEl.textContent = `插件 ${current}`;
+
+  let latest = null;
+  try {
+    latest = await fetchPublishedExtensionVersion();
+  } catch {}
+
+  try {
+    const health = await fetch(apiUrl('/health'), { cache: 'no-store' }).then((r) => r.json());
+    const expected = health?.expectedExtensionVersion;
+    if (expected && (!latest || compareVersions(expected, latest) > 0)) {
+      latest = expected;
+    }
+  } catch {}
+
+  if (!latest || compareVersions(current, latest) >= 0) {
+    hideUpdateBanner();
+    return;
+  }
+
+  const { dismissedUpdateVersion } = await chrome.storage.local.get('dismissedUpdateVersion');
+  if (dismissedUpdateVersion && compareVersions(dismissedUpdateVersion, latest) >= 0) {
+    hideUpdateBanner();
+    return;
+  }
+
+  showUpdateBanner(latest);
+}
+
 function setSetupVisible(on) {
   document.body.classList.toggle('setup-on', on);
   document.getElementById('setup').hidden = !on;
@@ -1450,6 +1540,13 @@ async function connectApp() {
   resizeInput();
 }
 
+document.getElementById('dismissUpdateBtn').addEventListener('click', async () => {
+  if (pendingUpdateVersion) {
+    await chrome.storage.local.set({ dismissedUpdateVersion: pendingUpdateVersion });
+  }
+  hideUpdateBanner();
+});
+
 document.getElementById('copyInstall').addEventListener('click', async () => {
   const cmd = document.getElementById('installCmd').textContent;
   try {
@@ -1465,6 +1562,8 @@ document.getElementById('copyInstall').addEventListener('click', async () => {
     void chrome.runtime.lastError;
     if (res?.places?.length) syncPendingPlaces(res.places, { keepPlacing: true });
   });
+  document.getElementById('extVersion').textContent = `插件 ${localExtensionVersion()}`;
+  void refreshUpdateBanner();
   if (await checkBridge()) {
     setSetupVisible(false);
     await connectApp();
