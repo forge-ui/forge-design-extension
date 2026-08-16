@@ -1286,8 +1286,26 @@ function setNativeValue(el, value) {
   el.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
+function pageIsBackground() {
+  return document.hidden || document.visibilityState === 'hidden';
+}
+
+function safeFocus(el) {
+  if (!el || typeof el.focus !== 'function') return;
+  // Focusing a control in a background tab brings Chrome (and this tab) to
+  // the front on macOS. Only focus when the user is already looking here.
+  if (pageIsBackground()) return;
+  try {
+    el.focus({ preventScroll: true });
+  } catch {
+    try {
+      el.focus();
+    } catch {}
+  }
+}
+
 async function typeText(el, text, opts = {}) {
-  el.focus();
+  safeFocus(el);
   await sleep(50);
 
   // contenteditable / role=textbox (X compose uses this)
@@ -1368,7 +1386,10 @@ const CURSOR_ARRIVE_MS = 500;
 
 function agentNotify() {
   try {
-    window.__gcbAgent?.enable();
+    chrome.runtime.sendMessage({ type: 'amIAgentTab' }, (res) => {
+      if (chrome.runtime.lastError) return;
+      if (res?.isAgent) window.__gcbAgent?.enable();
+    });
   } catch {}
 }
 
@@ -1529,11 +1550,7 @@ function dispatchPointerClick(el, x, y) {
       new PointerEvent('pointerdown', mouseEventInit(x, y, { ...common, buttons: 1, detail: 1 }))
     );
     target.dispatchEvent(new MouseEvent('mousedown', mouseEventInit(x, y, { buttons: 1, detail: 1 })));
-    try {
-      target.focus?.({ preventScroll: true });
-    } catch {
-      target.focus?.();
-    }
+    safeFocus(target);
     target.dispatchEvent(
       new PointerEvent('pointerup', mouseEventInit(x, y, { ...common, buttons: 0, detail: 1 }))
     );
@@ -1659,7 +1676,7 @@ async function handleDomCommand(command, args) {
       el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'auto' });
       await sleep(50);
       await pointAtElement(el, '聚焦');
-      el.focus();
+      safeFocus(el);
       return { ok: true };
     }
 
@@ -1780,7 +1797,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
   if (msg.type === 'agent-ui-enable') {
     try {
-      window.__gcbAgent?.enable();
+      if (msg.enabled === false) window.__gcbAgent?.disable();
+      else if (!msg.trusted) window.__gcbAgent?.enable();
     } catch {}
     sendResponse({ ok: true });
     return true;

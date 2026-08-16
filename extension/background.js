@@ -153,10 +153,8 @@ async function startPickerOnUserTab() {
   }
   const ok = await ensureContentScript(tab.id, { agentUi: false });
   if (!ok) return { error: 'Cannot inject picker on this page' };
-  try {
-    await chrome.tabs.update(tab.id, { active: true });
-    if (tab.windowId) await chrome.windows.update(tab.windowId, { focused: true });
-  } catch {}
+  // Overlay the visible page in place. Do not activate the tab or focus the
+  // window — that yanks Chrome away from whatever the user is doing.
   try {
     const result = await chrome.tabs.sendMessage(tab.id, { type: 'picker-start' });
     if (result?.pick) await saveLastPick(result.pick);
@@ -174,10 +172,6 @@ async function startPlaceOnUserTab(component) {
   }
   const ok = await ensureContentScript(tab.id, { agentUi: false });
   if (!ok) return { error: 'Cannot inject placer on this page' };
-  try {
-    await chrome.tabs.update(tab.id, { active: true });
-    if (tab.windowId) await chrome.windows.update(tab.windowId, { focused: true });
-  } catch {}
   try {
     const result = await chrome.tabs.sendMessage(tab.id, { type: 'place-start', component });
     if (result?.place && !result.preview) await saveLastPlace(result.place);
@@ -299,6 +293,37 @@ async function tabExists(tabId) {
   }
 }
 
+async function disableAgentUi(tabId) {
+  if (!tabId) return;
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: 'agent-ui-enable', enabled: false, trusted: true });
+  } catch {}
+}
+
+async function setAgentTabId(nextId) {
+  const prev = agentTabId;
+  if (prev === nextId) {
+    if (nextId) await enableAgentUi(nextId);
+    return nextId;
+  }
+  agentTabId = nextId || null;
+  await saveConfig({ agentTabId });
+  if (prev) await disableAgentUi(prev);
+  if (nextId) await enableAgentUi(nextId);
+  return nextId;
+}
+
+/**
+ * True when this tab is the one the user is looking at, and it is not already
+ * the dedicated agent workspace. Driving that tab would steal their keyboard.
+ */
+async function isUserBrowsingTab(tabId) {
+  if (!tabId) return false;
+  if (tabId === agentTabId) return false;
+  const user = await getUserFacingTab();
+  return user?.id === tabId;
+}
+
 /**
  * Resolve the dedicated silent agent tab.
  * Never focuses the user's current tab. Creates a background tab if needed.
@@ -308,15 +333,17 @@ async function ensureAgentTab(preferUrl) {
     return agentTabId;
   }
 
-  // Reuse a previously marked agent tab if storage was lost
+  const user = await getUserFacingTab();
+
+  // Reuse a previously marked agent tab if storage was lost — but never the
+  // tab the user is currently browsing.
   const all = await chrome.tabs.query({});
   const found = all.find(
-    (t) => t.title && t.title.includes(AGENT_TAB_TITLE_MARK)
+    (t) => t.id !== user?.id && t.title && t.title.includes(AGENT_TAB_TITLE_MARK)
   );
   if (found?.id) {
-    agentTabId = found.id;
-    await saveConfig({ agentTabId });
-    return agentTabId;
+    await setAgentTabId(found.id);
+    return found.id;
   }
 
   // New silent background tab — never steals the user's current tab
@@ -324,18 +351,42 @@ async function ensureAgentTab(preferUrl) {
     url: preferUrl || 'about:blank',
     active: false,
   });
-  agentTabId = tab.id;
-  await saveConfig({ agentTabId });
-  // title mark after load
+  await setAgentTabId(tab.id);
   waitTabComplete(tab.id).then(() => markAgentTabTitle(tab.id));
-  return agentTabId;
+  return tab.id;
+}
+
+/**
+ * Pin a tab as the agent workspace. If that tab is the one the user is
+ * browsing, clone it into a silent background tab instead of hijacking it.
+ */
+async function adoptAgentTab(tabId, preferUrl) {
+  if (tabId && (await isUserBrowsingTab(tabId))) {
+    let url = preferUrl;
+    if (!url) {
+      try {
+        const tab = await chrome.tabs.get(tabId);
+        if (tab.url && !isRestrictedUrl(tab.url)) url = tab.url;
+      } catch {}
+    }
+    const created = await chrome.tabs.create({
+      url: url || 'about:blank',
+      active: false,
+    });
+    await setAgentTabId(created.id);
+    if (url) await waitTabComplete(created.id);
+    waitTabComplete(created.id).then(() => markAgentTabTitle(created.id));
+    return created.id;
+  }
+  if (tabId && (await tabExists(tabId))) {
+    await setAgentTabId(tabId);
+    return tabId;
+  }
+  return ensureAgentTab(preferUrl);
 }
 
 /** Resolve work tab: explicit tabId > agent tab. Never defaults to user active tab. */
 async function resolveWorkTabId(args = {}) {
-  if (args.tabId) {
-    if (await tabExists(args.tabId)) return args.tabId;
-  }
   // useActive: true only if caller explicitly wants current tab (rare).
   // Do NOT reassign agentTabId here — operating the active tab once must not
   // permanently mark the user's browsing tab as the silent agent tab.
@@ -343,22 +394,26 @@ async function resolveWorkTabId(args = {}) {
     const active = await getActiveTab();
     if (active?.id) return active.id;
   }
+  if (args.tabId && (await tabExists(args.tabId))) {
+    // A stale tabId must not pull automation onto the page the user is using.
+    if (!(await isUserBrowsingTab(args.tabId))) return args.tabId;
+  }
   return ensureAgentTab(args.url);
 }
 
 async function enableAgentUi(tabId) {
-  // Turn on the visible cursor only for the work/agent tab receiving automation.
-  // Never broadcast enable to the user's other tabs.
-  if (!tabId) return;
+  // Visible cursor + favicon overlay belong only on the dedicated agent tab.
+  // Enabling them on the user's browsing tab steals the pointer and favicon.
+  if (!tabId || tabId !== agentTabId) return;
   try {
-    await chrome.tabs.sendMessage(tabId, { type: 'agent-ui-enable', enabled: true });
+    await chrome.tabs.sendMessage(tabId, { type: 'agent-ui-enable', enabled: true, trusted: true });
   } catch {}
 }
 
 const CONTENT_SCRIPTS = ['agent-ui.js', 'vendor/forge-palette.js', 'content.js'];
 
 async function ensureContentScript(tabId, opts = {}) {
-  const agentUi = opts.agentUi !== false;
+  const agentUi = opts.agentUi !== false && tabId === agentTabId;
   // Prefer ping-first so we do NOT re-inject content.js on every command.
   // Re-injection stacks message listeners and races cursor movement on SPA sites
   // like x.com.
@@ -413,10 +468,10 @@ async function markAgentTabTitle(tabId) {
 }
 
 async function sendToTab(tabId, message) {
-  const ok = await ensureContentScript(tabId);
+  const ok = await ensureContentScript(tabId, { agentUi: tabId === agentTabId });
   if (!ok) return { error: 'Cannot inject content script on this page (chrome:// or blocked)' };
-  // Guarantee cursor UI is on before any DOM command.
-  await enableAgentUi(tabId);
+  // Cursor overlay only on the dedicated agent tab — never the user's page.
+  if (tabId === agentTabId) await enableAgentUi(tabId);
   try {
     return await chrome.tabs.sendMessage(tabId, message);
   } catch (err) {
@@ -504,8 +559,20 @@ async function handleCommand(command, args) {
         // useActive means "operate user's current tab this once" — do not permanently
         // hijack that tab as the silent agent workspace.
         if (!args.useActive) {
-          agentTabId = tab.id;
-          await saveConfig({ agentTabId: tab.id });
+          const adopted = await adoptAgentTab(tab.id, url);
+          if (adopted !== tab.id) {
+            await chrome.tabs.update(adopted, { url });
+            await waitTabComplete(adopted);
+            await markAgentTabTitle(adopted);
+            await ensureContentScript(adopted);
+            return {
+              tabId: adopted,
+              url,
+              silent: !foreground,
+              agent: true,
+              useActive: false,
+            };
+          }
           await waitTabComplete(tab.id);
           await markAgentTabTitle(tab.id);
         } else {
@@ -528,8 +595,7 @@ async function handleCommand(command, args) {
           url: args.url || 'about:blank',
           active: foreground, // default false = silent
         });
-        agentTabId = tab.id;
-        await saveConfig({ agentTabId: tab.id });
+        await setAgentTabId(tab.id);
         if (args.url) await waitTabComplete(tab.id);
         await markAgentTabTitle(tab.id);
         await ensureContentScript(tab.id);
@@ -544,10 +610,15 @@ async function handleCommand(command, args) {
       case 'activate': {
         // By default: pin agentTabId only, do NOT steal UI focus.
         // Pass focus:true / foreground:true to actually bring tab to front.
-        const tabId = args.tabId || (await ensureAgentTab());
-        agentTabId = tabId;
-        await saveConfig({ agentTabId: tabId });
         const wantFocus = !!args.focus || !!args.foreground;
+        const requested = args.tabId || (await ensureAgentTab());
+        let tabId;
+        if (wantFocus || args.adopt) {
+          await setAgentTabId(requested);
+          tabId = requested;
+        } else {
+          tabId = await adoptAgentTab(requested);
+        }
         if (wantFocus) {
           const tab = await chrome.tabs.update(tabId, { active: true });
           if (tab.windowId) {
@@ -620,11 +691,14 @@ async function handleCommand(command, args) {
             func: async (sel, value) => {
               const el = document.querySelector(sel);
               if (!el) return { error: `Element not found: ${sel}` };
-              // Field was already focused/clicked by content-script humanClick.
-              try {
-                el.focus({ preventScroll: true });
-              } catch {
-                el.focus();
+              // Field was already clicked by content-script humanClick.
+              // Skip focus() on a background tab — it steals Chrome/OS focus.
+              if (!document.hidden && document.visibilityState !== 'hidden') {
+                try {
+                  el.focus({ preventScroll: true });
+                } catch {
+                  try { el.focus(); } catch {}
+                }
               }
               await new Promise((r) => setTimeout(r, 40));
               try {
@@ -969,6 +1043,10 @@ if (chrome.sidePanel?.setPanelBehavior) {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   savePendingPlaces(tabId, null).catch(() => {});
+  if (tabId === agentTabId) {
+    agentTabId = null;
+    saveConfig({ agentTabId: null }).catch(() => {});
+  }
 });
 
 // Keep service worker from dying forever without reconnect attempts

@@ -62,7 +62,7 @@ Read the last Forge block(s) the user confirmed onto the page (after 写入源�
 scripts/bridge.sh last-place
 ```
 
-Use the active user tab only when explicitly requested:
+Use the active user tab only when the user asked you to take over their current tab. `useActive`, `focus`, and `foreground` steal keyboard or window focus — default commands already run on the silent agent tab.
 
 ```sh
 scripts/bridge.sh raw '{"command":"snapshot","args":{"useActive":true,"limit":80}}'

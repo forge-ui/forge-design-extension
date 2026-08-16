@@ -646,6 +646,19 @@
   }
 
   function setEnabled(on) {
+    if (!on) {
+      applyEnabled(false);
+      return;
+    }
+    try {
+      chrome.runtime.sendMessage({ type: 'amIAgentTab' }, (res) => {
+        if (chrome.runtime.lastError) return;
+        if (res?.isAgent) applyEnabled(true);
+      });
+    } catch {}
+  }
+
+  function applyEnabled(on) {
     enabled = !!on;
     if (enabled) {
       startGuards();
@@ -691,13 +704,21 @@
   // never a normal user click. That prevents hijacking the tab the user is using.
   chrome.runtime.onMessage.addListener((msg, _s, sendResponse) => {
     if (msg.type === 'agent-ui' || msg.type === 'agent-ui-enable') {
-      if (msg.enabled === false) setEnabled(false);
-      else {
-        setEnabled(true);
+      if (msg.enabled === false) {
+        applyEnabled(false);
+        sendResponse?.({ ok: true });
+        return true;
+      }
+      // Background already gated this to the dedicated agent tab.
+      if (msg.trusted) {
+        applyEnabled(true);
         if (msg.args?.selector) {
           pointAtSelector(msg.args.selector, { label: msg.command || '' });
         }
+        sendResponse?.({ ok: true });
+        return true;
       }
+      setEnabled(true);
       sendResponse?.({ ok: true });
       return true;
     }

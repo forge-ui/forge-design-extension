@@ -48,6 +48,7 @@ Use `scripts/bridge.sh` only when you need the live page (last pick, last place,
 - Never print `.bridge-state.json`, `BRIDGE_TOKEN`, cookies, passwords, or page secrets.
 - The bridge listens on `127.0.0.1` only. Token stays on this machine.
 - Keep automation on the dedicated agent tab unless the user asks for the active tab.
+- Do not pass `focus`, `foreground`, or `useActive` unless the user asked to take over their current tab. Those steal keyboard and window focus.
 
 ## Commands
 
