@@ -43,11 +43,20 @@
       </div>
     </header>
 
+    <div class="update-banner" id="updateBanner" hidden>
+      <span id="updateBannerText">有新版本可用</span>
+      <div class="update-banner-actions">
+        <a class="update-docs" id="updateBannerLink" href="https://github.com/forge-ui/forge-design-extension" target="_blank" rel="noreferrer">如何更新</a>
+        <button class="update-dismiss" id="dismissUpdateBtn" type="button">关闭</button>
+      </div>
+    </div>
+
     <div class="more-menu" id="moreMenu" hidden>
       <div class="bridge-row">
         <div>
           <div class="bridge-title">本机桥接</div>
           <div class="bridge-state" id="bridgeState">检测中…</div>
+          <div class="ext-version" id="extVersion"></div>
         </div>
         <button class="bridge-disconnect" id="bridgeSwitch" type="button">断开链接</button>
       </div>
