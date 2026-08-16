@@ -157,16 +157,30 @@ function describeElement(el) {
   };
 }
 
-let pickerSession = null;
+let overlaySession = null;
+let placeGhosts = [];
+let placeGhostListeners = null;
+let placeGhostDim = null;
 
-function pickerIgnore(el) {
-  return !!(el && el.closest && el.closest('[data-gcb-picker]'));
+function overlayIgnore(el, event) {
+  const nodes = [];
+  if (event && typeof event.composedPath === 'function') {
+    for (const node of event.composedPath()) nodes.push(node);
+  } else if (el) {
+    nodes.push(el);
+  }
+  for (const node of nodes) {
+    if (!node) continue;
+    if (node.nodeType === 1 && node.closest && node.closest('[data-gcb-picker]')) return true;
+    if (node.host && node.host.closest && node.host.closest('[data-gcb-picker]')) return true;
+  }
+  return false;
 }
 
-function stopPicker(result) {
-  const session = pickerSession;
+function stopOverlay(result) {
+  const session = overlaySession;
   if (!session) return;
-  pickerSession = null;
+  overlaySession = null;
   document.removeEventListener('mousemove', session.onMove, true);
   document.removeEventListener('click', session.onClick, true);
   document.removeEventListener('keydown', session.onKey, true);
@@ -178,22 +192,52 @@ function stopPicker(result) {
   session.resolve(result);
 }
 
+function attachOverlay({ root, onMove, onClick, onScroll, resolve, cursor }) {
+  const onKey = (event) => {
+    if (event.key === 'Escape' || event.code === 'Escape' || event.keyCode === 27) {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      stopOverlay({ cancelled: true });
+    }
+  };
+  const onCancel = (event) => {
+    event.preventDefault();
+    stopOverlay({ cancelled: true });
+  };
+  const prevCursor = document.documentElement.style.cursor;
+  document.documentElement.style.cursor = cursor || 'crosshair';
+  document.addEventListener('mousemove', onMove, true);
+  document.addEventListener('click', onClick, true);
+  document.addEventListener('keydown', onKey, true);
+  window.addEventListener('keydown', onKey, true);
+  document.addEventListener('contextmenu', onCancel, true);
+  document.addEventListener('scroll', onScroll, true);
+  overlaySession = { promise: null, resolve, root, onMove, onClick, onKey, onCancel, onScroll, prevCursor };
+}
+
+function createOverlayRoot(html) {
+  const root = document.createElement('div');
+  root.setAttribute('data-gcb-picker', '1');
+  root.id = 'gcb-picker-root';
+  root.innerHTML = html;
+  document.documentElement.appendChild(root);
+  return root;
+}
+
 function startPicker() {
-  if (pickerSession) return pickerSession.promise;
+  if (overlaySession) stopOverlay({ cancelled: true });
 
   let resolve;
   const promise = new Promise((r) => {
     resolve = r;
   });
 
-  const root = document.createElement('div');
-  root.setAttribute('data-gcb-picker', '1');
-  root.id = 'gcb-picker-root';
-  root.innerHTML =
+  const root = createOverlayRoot(
     '<div id="gcb-picker-box" data-gcb-picker="1"></div>' +
     '<div id="gcb-picker-label" data-gcb-picker="1"></div>' +
-    '<div id="gcb-picker-hint" data-gcb-picker="1">点击页面元素，Grok 就能对准它 · Esc 取消</div>';
-  document.documentElement.appendChild(root);
+    '<div id="gcb-picker-hint" data-gcb-picker="1">点击页面元素，Grok 就能对准它 · Esc 取消</div>'
+  );
 
   const box = root.querySelector('#gcb-picker-box');
   const label = root.querySelector('#gcb-picker-label');
@@ -226,7 +270,7 @@ function startPicker() {
   function targetFromEvent(event) {
     let el = event.target;
     if (el && el.nodeType !== 1) el = el.parentElement;
-    if (pickerIgnore(el)) return hovered;
+    if (overlayIgnore(el, event)) return hovered;
     return el;
   }
 
@@ -236,7 +280,7 @@ function startPicker() {
   };
   const onScroll = () => paint(hovered);
   const onClick = (event) => {
-    if (pickerIgnore(event.target)) return;
+    if (overlayIgnore(event.target, event)) return;
     event.preventDefault();
     event.stopPropagation();
     const el = targetFromEvent(event);
@@ -245,34 +289,935 @@ function startPicker() {
       try {
         chrome.runtime.sendMessage({ type: 'picker-result', pick });
       } catch {}
-      stopPicker({ ok: true, pick });
+      stopOverlay({ ok: true, pick });
     } else {
-      stopPicker({ cancelled: true, error: 'no element' });
+      stopOverlay({ cancelled: true, error: 'no element' });
     }
   };
+
+  attachOverlay({ root, onMove, onClick, onScroll, resolve });
+  overlaySession.promise = promise;
+  return promise;
+}
+
+function placeBlockTarget(el) {
+  let current = el;
+  let depth = 0;
+  while (current && current.parentElement && current !== document.body && depth < 8) {
+    const inline = ['SPAN', 'A', 'STRONG', 'EM', 'SVG', 'PATH', 'LABEL', 'I', 'SMALL', 'CODE'].includes(current.tagName);
+    const rect = current.getBoundingClientRect();
+    if (!inline && rect.height >= 28 && rect.width >= 64) return current;
+    current = current.parentElement;
+    depth += 1;
+  }
+  return el;
+}
+
+function insertPositionFor(el, event) {
+  const rect = el.getBoundingClientRect();
+  return closestEdge(rect, event.clientX, event.clientY).position;
+}
+
+function closestEdge(rect, x, y) {
+  const dist = {
+    before: Math.abs(y - rect.top),
+    after: Math.abs(y - rect.bottom),
+    left: Math.abs(x - rect.left),
+    right: Math.abs(x - rect.right),
+  };
+  const position = Object.keys(dist).reduce((best, key) => (dist[key] < dist[best] ? key : best), 'after');
+  const inside = x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+  const dx = x < rect.left ? rect.left - x : x > rect.right ? x - rect.right : 0;
+  const dy = y < rect.top ? rect.top - y : y > rect.bottom ? y - rect.bottom : 0;
+  const approach = inside ? dist[position] : Math.hypot(dx, dy);
+  const inset = inside ? Math.min(x - rect.left, rect.right - x, y - rect.top, rect.bottom - y) : 0;
+  return { position, dist: dist[position], approach, inside, inset, rect };
+}
+
+function insidePadFor(item) {
+  const kind = item.place?.component?.kind || item.component?.kind || '';
+  if (kind === 'button' || kind === 'iconbtn' || kind === 'chip' || kind === 'link' || kind === 'toggle') return 999;
+  if (kind === 'table' || kind === 'card' || kind === 'list' || kind === 'layout') return 18;
+  return 28;
+}
+
+function hitGhostInterior(item, x, y) {
+  const host = item.ghost.getBoundingClientRect();
+  let best = null;
+  try {
+    const nodes = item.shadow.querySelectorAll(
+      'td, th, [role="cell"], [role="columnheader"], [role="gridcell"]'
+    );
+    for (const node of nodes) {
+      const box = node.getBoundingClientRect();
+      if (x < box.left || x > box.right || y < box.top || y > box.bottom) continue;
+      const area = box.width * box.height;
+      if (!best || area < best.area) best = { node, rect: box, area };
+    }
+  } catch {}
+  if (!best) return { rect: host, slot: null };
+  const cell = best.node;
+  const rowEl = cell.closest('tr, [role="row"]');
+  const table = cell.closest('table, [role="table"], [role="grid"]');
+  const col = Number.isInteger(cell.cellIndex)
+    ? cell.cellIndex
+    : rowEl
+      ? [...rowEl.children].indexOf(cell)
+      : -1;
+  const rows = table ? [...table.querySelectorAll('tr, [role="row"]')] : [];
+  const row = rowEl && table ? rows.indexOf(rowEl) : -1;
+  return {
+    rect: best.rect,
+    slot: {
+      tag: cell.tagName.toLowerCase(),
+      text: (cell.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 80),
+      row,
+      col,
+      header: cell.tagName === 'TH' || cell.getAttribute('role') === 'columnheader',
+    },
+  };
+}
+
+function ghostTargetAt(item, x, y) {
+  const rect = item.ghost.getBoundingClientRect();
+  const edge = closestEdge(rect, x, y);
+  const area = Math.max(1, rect.width * rect.height);
+  if (!edge.inside) {
+    if (edge.approach > 56) return null;
+    return { item, ...edge, slot: null, area };
+  }
+  if (edge.inset > insidePadFor(item)) {
+    const interior = hitGhostInterior(item, x, y);
+    const box = interior.rect || rect;
+    return {
+      item,
+      position: 'inside',
+      dist: 0,
+      approach: 0,
+      inside: true,
+      inset: edge.inset,
+      rect: box,
+      slot: interior.slot || null,
+      area: Math.max(1, box.width * box.height),
+    };
+  }
+  return { item, ...edge, slot: null, area };
+}
+
+function nearestGhostTarget(x, y) {
+  let best = null;
+  for (const item of placeGhosts) {
+    if (item.ghost.getAttribute('data-gcb-committed') === '1') continue;
+    const hit = ghostTargetAt(item, x, y);
+    if (!hit) continue;
+    if (!best) {
+      best = hit;
+      continue;
+    }
+    if (hit.inside && (!best.inside || hit.area < best.area)) {
+      best = hit;
+      continue;
+    }
+    if (!hit.inside && !best.inside && hit.approach < best.approach) best = hit;
+  }
+  return best;
+}
+
+const PLACE_GHOST_CSS = `
+:host { display: block; }
+* { box-sizing: border-box; }
+.wrap {
+  position: relative;
+  width: 100%;
+  overflow: visible;
+  background: transparent;
+}
+.wrap.bare { overflow: visible; }
+.num {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 2;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #000a19;
+  color: #fff;
+  font: 700 11px/20px Manrope, ui-sans-serif, system-ui, sans-serif;
+  text-align: center;
+  box-shadow: 0 0 0 2px #fff;
+  pointer-events: none;
+}
+.close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: #000a19;
+  color: #fff;
+  box-shadow: 0 0 0 2px #fff;
+  cursor: pointer;
+  pointer-events: auto;
+}
+.close:hover { background: #1a2238; }
+.close svg { display: block; }
+.wrap.bare .num { top: -8px; left: -8px; }
+.wrap.bare .close { top: -8px; right: -8px; }
+.stage { width: 100%; min-height: 24px; pointer-events: none; }
+`;
+
+function ghostSizeFor(kind) {
+  if (kind === 'header' || kind === 'layout') return { height: 108, minWidth: 280 };
+  if (kind === 'card' || kind === 'list' || kind === 'menu') return { height: 168, minWidth: 280 };
+  if (kind === 'filter' || kind === 'tabs' || kind === 'field' || kind === 'select') return { height: 86, minWidth: 280 };
+  if (kind === 'table') return { height: 268, minWidth: 320 };
+  if (kind === 'cell') return { height: 44, minWidth: 120 };
+  if (kind === 'stat' || kind === 'stat-bar' || kind === 'stat-wheel' || kind === 'stat-plain') return { height: 176, minWidth: 280 };
+  if (kind === 'chart' || kind === 'cal') return { height: 236, minWidth: 320 };
+  if (kind === 'button' || kind === 'iconbtn' || kind === 'link' || kind === 'chip' || kind === 'toggle' || kind === 'pager' || kind === 'crumbs') return { height: 86, minWidth: 220 };
+  if (kind === 'dialog') return { height: 248, minWidth: 360 };
+  if (kind === 'nav' || kind === 'steps') return { height: 140, minWidth: 220 };
+  if (kind === 'chat' || kind === 'area' || kind === 'upload' || kind === 'check') return { height: 140, minWidth: 260 };
+  if (kind === 'avatar' || kind === 'bar') return { height: 100, minWidth: 220 };
+  return { height: 160, minWidth: 280 };
+}
+
+function restorePlaceGap(el) {
+  if (!el) return;
+  const raw = el.getAttribute('data-gcb-place-gap');
+  if (!raw) return;
+  try {
+    const saved = JSON.parse(raw);
+    el.style.marginTop = saved.marginTop || '';
+    el.style.marginBottom = saved.marginBottom || '';
+    el.style.marginLeft = saved.marginLeft || '';
+    el.style.marginRight = saved.marginRight || '';
+    el.style.paddingTop = saved.paddingTop || '';
+    el.style.paddingBottom = saved.paddingBottom || '';
+    el.style.paddingLeft = saved.paddingLeft || '';
+    el.style.paddingRight = saved.paddingRight || '';
+  } catch {}
+  el.removeAttribute('data-gcb-place-gap');
+}
+
+function clearPlaceGap() {
+  document.querySelectorAll('[data-gcb-place-gap]').forEach((node) => restorePlaceGap(node));
+}
+
+function applyCombinedGap(el, gaps) {
+  restorePlaceGap(el);
+  const before = gaps?.before || 0;
+  const after = gaps?.after || 0;
+  const left = gaps?.left || 0;
+  const right = gaps?.right || 0;
+  if (!el || !el.style || (before <= 0 && after <= 0 && left <= 0 && right <= 0)) return;
+  const style = window.getComputedStyle(el);
+  el.setAttribute('data-gcb-place-gap', JSON.stringify({
+    marginTop: el.style.marginTop,
+    marginBottom: el.style.marginBottom,
+    marginLeft: el.style.marginLeft,
+    marginRight: el.style.marginRight,
+    paddingTop: el.style.paddingTop,
+    paddingBottom: el.style.paddingBottom,
+    paddingLeft: el.style.paddingLeft,
+    paddingRight: el.style.paddingRight,
+  }));
+  if (before > 0) {
+    if ((parseFloat(style.paddingTop) || 0) < 1) el.style.paddingTop = '1px';
+    el.style.marginTop = `${(parseFloat(style.marginTop) || 0) + before}px`;
+  }
+  if (after > 0) {
+    if ((parseFloat(style.paddingBottom) || 0) < 1) el.style.paddingBottom = '1px';
+    el.style.marginBottom = `${(parseFloat(style.marginBottom) || 0) + after}px`;
+  }
+  if (left > 0) {
+    if ((parseFloat(style.paddingLeft) || 0) < 1) el.style.paddingLeft = '1px';
+    el.style.marginLeft = `${(parseFloat(style.marginLeft) || 0) + left}px`;
+  }
+  if (right > 0) {
+    if ((parseFloat(style.paddingRight) || 0) < 1) el.style.paddingRight = '1px';
+    el.style.marginRight = `${(parseFloat(style.marginRight) || 0) + right}px`;
+  }
+}
+
+function slotLabel(position) {
+  if (position === 'before') return '上方';
+  if (position === 'left') return '左侧';
+  if (position === 'right') return '右侧';
+  if (position === 'inside') return '内部';
+  return '下方';
+}
+
+function ghostByPlacedAt(id) {
+  return placeGhosts.find((item) => item.place.placedAt === id) || null;
+}
+
+function isPlaceRoot(item) {
+  if (!item?.place.relativeTo) return true;
+  const seen = new Set();
+  let cur = item;
+  while (cur?.place.relativeTo) {
+    if (seen.has(cur.place.placedAt)) return true;
+    seen.add(cur.place.placedAt);
+    const parent = ghostByPlacedAt(cur.place.relativeTo);
+    if (!parent) return true;
+    cur = parent;
+  }
+  return false;
+}
+
+function captureGhostRect(item) {
+  const box = item.ghost?.getBoundingClientRect?.();
+  if (!box) return null;
+  return {
+    x: Math.round(box.left),
+    y: Math.round(box.top),
+    w: Math.round(box.width),
+    h: Math.round(box.height),
+  };
+}
+
+function placeListPayload() {
+  return placeGhosts.map((item, index) => {
+    const parent = item.place.relativeTo ? ghostByPlacedAt(item.place.relativeTo) : null;
+    const parentIndex = parent ? placeGhosts.indexOf(parent) + 1 : null;
+    return {
+      ...item.place,
+      index: index + 1,
+      relativeTo: item.place.relativeTo || null,
+      relativeToIndex: parentIndex,
+      slot: item.place.slot || null,
+      inset: item.place.inset || null,
+      rect: captureGhostRect(item),
+    };
+  });
+}
+
+function layoutComposition(places) {
+  const list = places || placeListPayload();
+  const lines = list.map((item) => {
+    const name = item.component?.name || item.component?.exportName || 'Forge';
+    if (item.relativeToIndex && item.position === 'inside') {
+      const cell = item.slot?.text ? `「${item.slot.text}」` : item.slot?.col >= 0 ? `第 ${item.slot.row + 1} 行第 ${item.slot.col + 1} 列` : '';
+      return `#${item.index} ${name} 叠在 #${item.relativeToIndex} 内部${cell ? ` ${cell}` : ''}`;
+    }
+    if (item.relativeToIndex) {
+      return `#${item.index} ${name} 在 #${item.relativeToIndex} 的${slotLabel(item.position)}`;
+    }
+    const anchor = item.pick?.testid || item.pick?.text || item.pick?.selector || '页面锚点';
+    return `#${item.index} ${name} 在「${anchor}」的${slotLabel(item.position)}`;
+  });
+  const rows = list.filter((item) => item.relativeToIndex && (item.position === 'left' || item.position === 'right'));
+  if (rows.length) {
+    lines.push('同一行：left/right 相对另一块预览的组件，源码里用 flex 行排列，不要拆成上下两块。');
+  }
+  return lines.join('\n');
+}
+
+function broadcastPlaces() {
+  try {
+    const places = placeListPayload();
+    chrome.runtime.sendMessage({
+      type: places.length || overlaySession ? 'place-preview' : 'place-dismiss',
+      place: places[places.length - 1] || null,
+      places,
+      layout: layoutComposition(places),
+    });
+  } catch {}
+}
+
+function ensurePlaceGhostListeners() {
+  if (placeGhostListeners) return;
+  const onScroll = () => layoutAllPlaceGhosts();
+  const onResize = () => layoutAllPlaceGhosts();
   const onKey = (event) => {
-    if (event.key === 'Escape' || event.code === 'Escape' || event.keyCode === 27) {
+    if (overlaySession) return;
+    if (event.key !== 'Escape' && event.code !== 'Escape') return;
+    event.preventDefault();
+    undoLastPlaceGhost();
+  };
+  window.addEventListener('scroll', onScroll, true);
+  window.addEventListener('resize', onResize, true);
+  document.addEventListener('keydown', onKey, true);
+  placeGhostListeners = { onScroll, onResize, onKey };
+}
+
+function teardownPlaceGhostListeners() {
+  if (!placeGhostListeners) return;
+  window.removeEventListener('scroll', placeGhostListeners.onScroll, true);
+  window.removeEventListener('resize', placeGhostListeners.onResize, true);
+  document.removeEventListener('keydown', placeGhostListeners.onKey, true);
+  placeGhostListeners = null;
+}
+
+function childGroups(item) {
+  const groups = { before: [], after: [], left: [], right: [], inside: [] };
+  const id = item.place.placedAt;
+  for (const child of placeGhosts) {
+    if (child.place.relativeTo === id) groups[ghostSlot(child.position)].push(child);
+  }
+  return groups;
+}
+
+function makeClusterSize() {
+  const memo = new Map();
+  function clusterSize(item) {
+    if (memo.has(item)) return memo.get(item);
+    const kids = childGroups(item);
+    const sizeOf = (list, dim) => list.reduce((sum, child) => sum + clusterSize(child)[dim], 0);
+    const maxOf = (list, dim) => list.reduce((max, child) => Math.max(max, clusterSize(child)[dim]), 0);
+    const selfW = item.size.width || item.size.minWidth || 220;
+    const selfH = item.size.height || 48;
+    const leftW = sizeOf(kids.left, 'width');
+    const rightW = sizeOf(kids.right, 'width');
+    const beforeH = sizeOf(kids.before, 'height');
+    const afterH = sizeOf(kids.after, 'height');
+    const sideH = Math.max(selfH, maxOf(kids.left, 'height'), maxOf(kids.right, 'height'));
+    const midW = Math.max(selfW, maxOf(kids.before, 'width'), maxOf(kids.after, 'width'));
+    const result = {
+      width: leftW + midW + rightW,
+      height: beforeH + sideH + afterH,
+      selfW,
+      selfH,
+      leftW,
+      beforeH,
+      sideH,
+      kids,
+    };
+    memo.set(item, result);
+    return result;
+  }
+  return clusterSize;
+}
+
+function placeDepth(item) {
+  let depth = 0;
+  let cur = item;
+  const seen = new Set();
+  while (cur?.place.relativeTo) {
+    if (seen.has(cur.place.placedAt)) break;
+    seen.add(cur.place.placedAt);
+    depth += 1;
+    cur = ghostByPlacedAt(cur.place.relativeTo);
+    if (!cur || depth > 8) break;
+  }
+  return depth;
+}
+
+function findGhostCell(item, slot) {
+  if (!item?.shadow || !slot) return null;
+  const table = item.shadow.querySelector('table, [role="table"], [role="grid"]');
+  if (!table) return null;
+  const rows = [...table.querySelectorAll('tr, [role="row"]')];
+  const row = rows[slot.row];
+  if (!row) return null;
+  const cells = [...row.querySelectorAll('td, th, [role="cell"], [role="columnheader"], [role="gridcell"]')];
+  if (slot.col >= 0 && cells[slot.col]) return cells[slot.col];
+  return cells[0] || row;
+}
+
+function insideAnchorBox(parent, child) {
+  const slot = child.place.slot;
+  if (slot && (slot.row >= 0 || slot.col >= 0)) {
+    const cell = findGhostCell(parent, slot);
+    if (cell) {
+      const box = cell.getBoundingClientRect();
+      return { left: box.left + 4, top: box.top + 4, width: Math.max(64, box.width - 8) };
+    }
+  }
+  const host = parent.ghost.getBoundingClientRect();
+  const inset = child.place.inset || { x: 0.08, y: 0.18 };
+  const width = Math.min(child.size.width || child.size.minWidth || 160, Math.max(64, host.width - 16));
+  return {
+    left: host.left + inset.x * host.width,
+    top: host.top + inset.y * host.height,
+    width,
+  };
+}
+
+function layoutSubtree(item, left, top, clusterSize) {
+  const cluster = clusterSize(item);
+  const selfLeft = left + cluster.leftW;
+  const selfTop = top + cluster.beforeH;
+  item.ghost.style.left = `${Math.max(8, Math.round(selfLeft))}px`;
+  item.ghost.style.top = `${Math.max(8, Math.round(selfTop))}px`;
+  item.ghost.style.width = `${cluster.selfW}px`;
+  item.ghost.style.zIndex = String(2147483645 + placeDepth(item));
+
+  let y = top;
+  for (const child of cluster.kids.before) {
+    layoutSubtree(child, selfLeft, y, clusterSize);
+    y += clusterSize(child).height;
+  }
+  let x = left;
+  for (const child of cluster.kids.left) {
+    layoutSubtree(child, x, selfTop, clusterSize);
+    x += clusterSize(child).width;
+  }
+  x = selfLeft + cluster.selfW;
+  for (const child of cluster.kids.right) {
+    layoutSubtree(child, x, selfTop, clusterSize);
+    x += clusterSize(child).width;
+  }
+  y = selfTop + cluster.sideH;
+  for (const child of cluster.kids.after) {
+    layoutSubtree(child, selfLeft, y, clusterSize);
+    y += clusterSize(child).height;
+  }
+  for (const child of cluster.kids.inside || []) {
+    const box = insideAnchorBox(item, child);
+    child.size.width = Math.min(child.size.width || child.size.minWidth || 160, box.width);
+    const nested = clusterSize(child);
+    layoutSubtree(child, box.left - nested.leftW, box.top - nested.beforeH, clusterSize);
+  }
+}
+
+function syncPlaceGaps() {
+  clearPlaceGap();
+  const clusterSize = makeClusterSize();
+  const map = new Map();
+  for (const item of placeGhosts) {
+    if (item.overlay || !item.el || !item.el.isConnected || !isPlaceRoot(item)) continue;
+    const rec = map.get(item.el) || { before: 0, after: 0, left: 0, right: 0 };
+    const cluster = clusterSize(item);
+    if (item.position === 'inside') {
+      map.set(item.el, rec);
+      continue;
+    }
+    if (item.position === 'before') rec.before += cluster.height;
+    else if (item.position === 'left') rec.left += cluster.width;
+    else if (item.position === 'right') rec.right += cluster.width;
+    else rec.after += cluster.height;
+    map.set(item.el, rec);
+  }
+  for (const [el, rec] of map) applyCombinedGap(el, rec);
+}
+
+function retitlePlaceGhosts() {
+  placeGhosts.forEach((item, index) => {
+    item.place.index = index + 1;
+    const num = item.shadow.querySelector('.num');
+    if (num) num.textContent = String(index + 1);
+  });
+}
+
+function ghostSlot(position) {
+  if (position === 'before' || position === 'left' || position === 'right' || position === 'inside') return position;
+  return 'after';
+}
+
+function layoutAllPlaceGhosts() {
+  placeGhosts = placeGhosts.filter((item) => {
+    if (item.el && item.el.isConnected) return true;
+    unmountGhostStage(item);
+    item.ghost.remove();
+    return false;
+  });
+  const clusterSize = makeClusterSize();
+  syncPlaceGaps();
+  const groups = new Map();
+  for (const item of placeGhosts) {
+    if (item.overlay) {
+      const width = Math.min(420, Math.max(item.size.minWidth, 360));
+      item.size.width = width;
+      layoutSubtree(
+        item,
+        Math.max(8, (window.innerWidth - clusterSize(item).width) / 2),
+        Math.max(24, (window.innerHeight - clusterSize(item).height) / 2 + (item.place.index - 1) * 16),
+        clusterSize
+      );
+      continue;
+    }
+    if (!isPlaceRoot(item)) continue;
+    if (!groups.has(item.el)) groups.set(item.el, { before: [], after: [], left: [], right: [], inside: [] });
+    groups.get(item.el)[ghostSlot(item.position)].push(item);
+  }
+  for (const [el, slots] of groups) {
+    const rect = el.getBoundingClientRect();
+    const blockWidth = Math.max(200, Math.min(Math.round(rect.width) || 280, window.innerWidth - 16));
+    const blockLeft = Math.max(8, Math.round(rect.left));
+    const topAlign = Math.max(8, Math.round(rect.top));
+    let top = rect.top - slots.before.reduce((sum, item) => sum + clusterSize(item).height, 0);
+    for (const item of slots.before) {
+      item.size.width = item.size.width || blockWidth;
+      layoutSubtree(item, blockLeft, top, clusterSize);
+      top += clusterSize(item).height;
+    }
+    top = rect.bottom;
+    for (const item of slots.after) {
+      item.size.width = item.size.width || blockWidth;
+      layoutSubtree(item, blockLeft, top, clusterSize);
+      top += clusterSize(item).height;
+    }
+    let x = rect.left - slots.left.reduce((sum, item) => sum + clusterSize(item).width, 0);
+    for (const item of slots.left) {
+      layoutSubtree(item, x, topAlign, clusterSize);
+      x += clusterSize(item).width;
+    }
+    x = rect.right;
+    for (const item of slots.right) {
+      layoutSubtree(item, x, topAlign, clusterSize);
+      x += clusterSize(item).width;
+    }
+    for (const item of slots.inside || []) {
+      const inset = item.place.inset || { x: 0.08, y: 0.12 };
+      layoutSubtree(
+        item,
+        rect.left + inset.x * rect.width,
+        rect.top + inset.y * rect.height,
+        clusterSize
+      );
+    }
+  }
+  if (!placeGhosts.some((item) => item.overlay) && placeGhostDim) {
+    placeGhostDim.remove();
+    placeGhostDim = null;
+  }
+}
+
+function unmountGhostStage(item) {
+  const stage = item.shadow?.querySelector('.stage');
+  if (stage && window.ForgePalette?.unmount) window.ForgePalette.unmount(stage);
+}
+
+function reparentPlaceChildren(item) {
+  const parentId = item.place.placedAt;
+  const nextRelative = item.place.relativeTo || null;
+  for (const child of placeGhosts) {
+    if (child === item || child.place.relativeTo !== parentId) continue;
+    child.place.relativeTo = nextRelative;
+    if (!nextRelative) {
+      child.el = item.el;
+      child.position = item.position;
+      child.place.position = item.position;
+      child.place.pick = item.place.pick;
+    }
+  }
+}
+
+function removePlaceGhost(item) {
+  reparentPlaceChildren(item);
+  unmountGhostStage(item);
+  item.ghost.remove();
+  placeGhosts = placeGhosts.filter((entry) => entry !== item);
+  if (!placeGhosts.some((entry) => entry.overlay) && placeGhostDim) {
+    placeGhostDim.remove();
+    placeGhostDim = null;
+  }
+  if (!placeGhosts.length) {
+    teardownPlaceGhostListeners();
+    clearPlaceGap();
+    document.querySelectorAll('.gcb-place-ghost, #gcb-place-ghost, #gcb-place-dim').forEach((node) => node.remove());
+  } else {
+    retitlePlaceGhosts();
+    layoutAllPlaceGhosts();
+  }
+}
+
+function undoLastPlaceGhost() {
+  const item = placeGhosts[placeGhosts.length - 1];
+  if (!item) return;
+  removePlaceGhost(item);
+  broadcastPlaces();
+}
+
+function dismissPlaceGhostItem(item) {
+  if (!item || !placeGhosts.includes(item)) return;
+  removePlaceGhost(item);
+  broadcastPlaces();
+}
+
+function dismissPlaceGhost() {
+  teardownPlaceGhostListeners();
+  for (const item of placeGhosts) {
+    unmountGhostStage(item);
+    item.ghost.remove();
+  }
+  placeGhosts = [];
+  if (placeGhostDim) {
+    placeGhostDim.remove();
+    placeGhostDim = null;
+  }
+  clearPlaceGap();
+  document.querySelectorAll('.gcb-place-ghost, #gcb-place-ghost, #gcb-place-dim').forEach((node) => node.remove());
+}
+
+function restorePlaceGhosts(places) {
+  if (placeGhosts.length || !Array.isArray(places) || !places.length) return;
+  const byId = new Map();
+  for (const saved of places) {
+    if (!saved?.component) continue;
+    let el = null;
+    if (saved.relativeTo && byId.has(saved.relativeTo)) {
+      el = byId.get(saved.relativeTo).el;
+    }
+    if (!el && saved.pick?.selector) el = queryOne(saved.pick.selector);
+    if (!el) continue;
+    const place = { ...saved, url: location.href, title: document.title };
+    const item = showPlaceGhost(el, saved.position || 'after', saved.component, place);
+    if (item && saved.placedAt) byId.set(saved.placedAt, item);
+  }
+}
+
+function markPlaceGhostCommitted() {
+  for (const item of placeGhosts) {
+    item.ghost.setAttribute('data-gcb-committed', '1');
+  }
+}
+
+function showPlaceGhost(el, position, component, place) {
+  const kind = component.kind || '';
+  const size = ghostSizeFor(kind);
+  const overlay = kind === 'dialog';
+  if (overlay && !placeGhostDim) {
+    placeGhostDim = document.createElement('div');
+    placeGhostDim.id = 'gcb-place-dim';
+    placeGhostDim.setAttribute('data-gcb-picker', '1');
+    document.documentElement.appendChild(placeGhostDim);
+  }
+
+  const ghost = document.createElement('div');
+  ghost.className = 'gcb-place-ghost';
+  ghost.setAttribute('data-gcb-picker', '1');
+  const bare = ['button', 'filter', 'iconbtn', 'chip', 'toggle', 'pager', 'crumbs', 'link', 'tabs'].includes(kind);
+  ghost.style.position = 'fixed';
+  ghost.style.zIndex = '2147483645';
+  const shadow = ghost.attachShadow({ mode: 'open' });
+  const index = placeGhosts.length + 1;
+  place.index = index;
+  const kit = chrome.runtime.getURL('vendor/forge-kit.css');
+  shadow.innerHTML =
+    `<style>${PLACE_GHOST_CSS}</style>` +
+    `<link rel="stylesheet" href="${kit}">` +
+    `<div class="wrap${bare ? ' bare' : ''}">` +
+      `<span class="num">${index}</span>` +
+      `<button class="close" type="button" aria-label="删除预览" title="删除">` +
+        `<svg viewBox="0 0 24 24" width="12" height="12" fill="none" aria-hidden="true">` +
+          `<path d="m15 9-6 6m0-6 6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>` +
+        `</svg>` +
+      `</button>` +
+      `<div class="stage"></div>` +
+    `</div>`;
+  const stage = shadow.querySelector('.stage');
+  const rect = el.getBoundingClientRect();
+  const side = position === 'left' || position === 'right';
+  ghost.style.width = `${overlay
+    ? Math.min(420, Math.max(280, Math.round(rect.width) || 360))
+    : side
+      ? size.minWidth
+      : Math.max(200, Math.min(Math.round(rect.width) || 280, window.innerWidth - 16))}px`;
+  document.documentElement.appendChild(ghost);
+
+  const item = { el, position, component, place, ghost, shadow, size, overlay };
+  placeGhosts.push(item);
+  const closeBtn = shadow.querySelector('.close');
+  if (closeBtn) {
+    closeBtn.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
-      event.stopImmediatePropagation();
-      stopPicker({ cancelled: true });
+      if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
+      dismissPlaceGhostItem(item);
+    });
+    closeBtn.addEventListener('pointerdown', (event) => {
+      event.stopPropagation();
+    });
+  }
+  ensurePlaceGhostListeners();
+  layoutAllPlaceGhosts();
+
+  const api = window.ForgePalette;
+  const link = shadow.querySelector('link');
+  const paint = () => {
+    if (api?.mount) api.mount(stage, { ...component, surface: 'ghost' });
+    else stage.textContent = component.exportName || component.name || 'Forge';
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const box = ghost.getBoundingClientRect();
+        const inner = stage.getBoundingClientRect();
+        size.height = Math.max(Math.round(box.height), Math.round(inner.height), 48);
+        size.width = Math.round(box.width) || size.minWidth;
+        layoutAllPlaceGhosts();
+      });
+    });
+    setTimeout(() => {
+      const box = ghost.getBoundingClientRect();
+      const inner = stage.getBoundingClientRect();
+      size.height = Math.max(Math.round(box.height), Math.round(inner.height), 48);
+      size.width = Math.round(box.width) || size.minWidth;
+      layoutAllPlaceGhosts();
+    }, 80);
+  };
+  if (link) {
+    let done = false;
+    const run = () => {
+      if (done) return;
+      done = true;
+      paint();
+    };
+    link.addEventListener('load', run);
+    link.addEventListener('error', run);
+    setTimeout(run, 400);
+  } else {
+    paint();
+  }
+  return item;
+}
+
+function startPlacer(component) {
+  if (overlaySession) stopOverlay({ cancelled: true });
+  const block = component && component.name ? component : { name: 'Forge 组件' };
+
+  let resolve;
+  const promise = new Promise((r) => {
+    resolve = r;
+  });
+
+  const root = createOverlayRoot(
+    '<div id="gcb-place-line" data-gcb-picker="1"></div>'
+  );
+
+  const line = root.querySelector('#gcb-place-line');
+  let hovered = null;
+  let hoverGhost = null;
+  let hoverSlot = null;
+  let position = 'after';
+
+  function paintLine(rect, nextPosition) {
+    const nested = nextPosition === 'inside';
+    line.classList.toggle('is-vertical', nextPosition === 'left' || nextPosition === 'right');
+    line.classList.toggle('is-inside', nested);
+    line.style.display = 'block';
+    if (nested) {
+      line.style.width = `${Math.max(8, Math.round(rect.width))}px`;
+      line.style.height = `${Math.max(8, Math.round(rect.height))}px`;
+      line.style.left = `${Math.round(rect.left)}px`;
+      line.style.top = `${Math.round(rect.top)}px`;
+      return;
     }
+    const vertical = nextPosition === 'left' || nextPosition === 'right';
+    if (vertical) {
+      line.style.width = '2px';
+      line.style.height = `${Math.max(1, Math.round(rect.height))}px`;
+      line.style.left = `${Math.round(nextPosition === 'left' ? rect.left : rect.right)}px`;
+      line.style.top = `${Math.round(rect.top)}px`;
+    } else {
+      line.style.height = '2px';
+      line.style.width = `${Math.max(1, Math.round(rect.width))}px`;
+      line.style.left = `${Math.round(rect.left)}px`;
+      line.style.top = `${Math.round(nextPosition === 'before' ? rect.top : rect.bottom)}px`;
+    }
+  }
+
+  function paint(el, event) {
+    if (event) {
+      hoverGhost = null;
+      hoverSlot = null;
+      const ghostHit = nearestGhostTarget(event.clientX, event.clientY);
+      const target = el && el !== document.documentElement && el !== document.body
+        ? placeBlockTarget(el)
+        : null;
+      const pageHit = target ? closestEdge(target.getBoundingClientRect(), event.clientX, event.clientY) : null;
+      const preferGhost = ghostHit && (
+        ghostHit.inside
+        || (pageHit?.inside && ghostHit.approach < 24)
+        || (!pageHit?.inside && ghostHit.approach <= (pageHit ? pageHit.approach : Infinity) + 8)
+      );
+      if (preferGhost) {
+        hoverGhost = ghostHit.item;
+        hoverSlot = ghostHit.slot || null;
+        hovered = hoverGhost.el;
+        position = ghostHit.position;
+        paintLine(ghostHit.rect, position);
+        return;
+      }
+      if (target) {
+        hovered = target;
+        const large = Math.min(pageHit.rect.width, pageHit.rect.height) > 96;
+        if (pageHit.inside && pageHit.inset > 28 && large) {
+          position = 'inside';
+          paintLine(pageHit.rect, 'inside');
+          return;
+        }
+        position = pageHit.position;
+        paintLine(pageHit.rect, position);
+        return;
+      }
+      line.style.display = 'none';
+      return;
+    }
+    if (hoverGhost) {
+      paintLine(hoverGhost.ghost.getBoundingClientRect(), position);
+      return;
+    }
+    if (hovered && hovered !== document.documentElement && hovered !== document.body) {
+      const target = placeBlockTarget(hovered);
+      const rect = target.getBoundingClientRect();
+      paintLine(rect, position);
+      hovered = target;
+      return;
+    }
+    line.style.display = 'none';
+  }
+
+  function targetFromEvent(event) {
+    let el = event.target;
+    if (el && el.nodeType !== 1) el = el.parentElement;
+    if (overlayIgnore(el, event)) return hovered;
+    return el;
+  }
+
+  const onMove = (event) => {
+    paint(targetFromEvent(event), event);
   };
-  const onCancel = (event) => {
+  const onScroll = () => paint(hovered);
+  const onClick = (event) => {
+    if (overlayIgnore(event.target, event)) return;
     event.preventDefault();
-    stopPicker({ cancelled: true });
+    event.stopPropagation();
+    paint(targetFromEvent(event), event);
+    const parentGhost = hoverGhost;
+    const el = parentGhost?.el || placeBlockTarget(hovered || targetFromEvent(event));
+    const pick = parentGhost?.place?.pick || describeElement(el);
+    if (!pick || !el) {
+      stopOverlay({ cancelled: true, error: 'no element' });
+      return;
+    }
+    const nextPosition = position;
+    const hostRect = parentGhost?.ghost.getBoundingClientRect() || el.getBoundingClientRect();
+    const place = {
+      placedAt: new Date().toISOString(),
+      url: location.href,
+      title: document.title,
+      position: nextPosition,
+      relativeTo: parentGhost ? parentGhost.place.placedAt : null,
+      slot: nextPosition === 'inside' ? hoverSlot : null,
+      inset: nextPosition === 'inside'
+        ? {
+            x: (event.clientX - hostRect.left) / Math.max(hostRect.width, 1),
+            y: (event.clientY - hostRect.top) / Math.max(hostRect.height, 1),
+          }
+        : null,
+      component: block,
+      pick,
+    };
+    showPlaceGhost(el, nextPosition, block, place);
+    const places = placeListPayload();
+    try {
+      chrome.runtime.sendMessage({ type: 'place-preview', place, places, layout: layoutComposition(places) });
+    } catch {}
+    stopOverlay({ ok: true, preview: true, place, places });
   };
 
-  const prevCursor = document.documentElement.style.cursor;
-  document.documentElement.style.cursor = 'crosshair';
-  document.addEventListener('mousemove', onMove, true);
-  document.addEventListener('click', onClick, true);
-  document.addEventListener('keydown', onKey, true);
-  window.addEventListener('keydown', onKey, true);
-  document.addEventListener('contextmenu', onCancel, true);
-  document.addEventListener('scroll', onScroll, true);
-
-  pickerSession = { promise, resolve, root, onMove, onClick, onKey, onCancel, onScroll, prevCursor };
+  attachOverlay({ root, onMove, onClick, onScroll, resolve, cursor: 'copy' });
+  overlaySession.promise = promise;
   return promise;
 }
 
@@ -341,8 +1286,26 @@ function setNativeValue(el, value) {
   el.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
+function pageIsBackground() {
+  return document.hidden || document.visibilityState === 'hidden';
+}
+
+function safeFocus(el) {
+  if (!el || typeof el.focus !== 'function') return;
+  // Focusing a control in a background tab brings Chrome (and this tab) to
+  // the front on macOS. Only focus when the user is already looking here.
+  if (pageIsBackground()) return;
+  try {
+    el.focus({ preventScroll: true });
+  } catch {
+    try {
+      el.focus();
+    } catch {}
+  }
+}
+
 async function typeText(el, text, opts = {}) {
-  el.focus();
+  safeFocus(el);
   await sleep(50);
 
   // contenteditable / role=textbox (X compose uses this)
@@ -423,7 +1386,10 @@ const CURSOR_ARRIVE_MS = 500;
 
 function agentNotify() {
   try {
-    window.__gcbAgent?.enable();
+    chrome.runtime.sendMessage({ type: 'amIAgentTab' }, (res) => {
+      if (chrome.runtime.lastError) return;
+      if (res?.isAgent) window.__gcbAgent?.enable();
+    });
   } catch {}
 }
 
@@ -466,12 +1432,18 @@ function elementCenter(el) {
  */
 function ensureFallbackCursor() {
   let el = document.getElementById('gcb-agent-cursor');
-  if (el && document.documentElement.contains(el)) return el;
+  const arrowSvg =
+    '<svg viewBox="150 40 680 880" width="23" height="30" aria-hidden="true"><path d="M174.08 113.39264l7.43424 646.56896c0.38912 33.95072 28.11392 61.1584 61.9264 60.76416a61.07136 61.07136 0 0 0 39.38816-15.01696l156.65152-136.36096 159.73376 277.82656c16.90624 29.39904 54.3488 39.4752 83.63008 22.49728l67.11296-38.912c29.2864-16.9728 39.31648-54.57408 22.41024-83.97312l-159.73376-277.82656 196.06016-68.096c31.95392-11.10016 48.896-46.11072 37.84704-78.19776a61.42464 61.42464 0 0 0-26.59328-32.75776L266.56256 59.83232c-29.06624-17.34144-66.63168-7.7312-83.89632 21.45792A61.71648 61.71648 0 0 0 174.08 113.39264z" fill="#111" stroke="#fff" stroke-width="72" stroke-linejoin="round" stroke-linecap="round"/></svg>';
+  if (el && document.documentElement.contains(el)) {
+    const arrow = el.querySelector('.gcb-agent-cursor-arrow');
+    if (arrow) arrow.innerHTML = arrowSvg;
+    return el;
+  }
   el = document.createElement('div');
   el.id = 'gcb-agent-cursor';
   el.setAttribute('aria-hidden', 'true');
   el.innerHTML =
-    '<span class="gcb-agent-cursor-arrow"><svg viewBox="0 0 24 32" width="23" height="30" aria-hidden="true"><path d="M2.25 1.75v24.1l6.05-5.12 4.15 9.02 4.05-1.88-4.1-8.9h8.05L2.25 1.75Z" fill="#080808" stroke="#fff" stroke-width="1.8" stroke-linejoin="round"/></svg></span><span class="gcb-agent-cursor-ring"></span>';
+    `<span class="gcb-agent-cursor-arrow">${arrowSvg}</span><span class="gcb-agent-cursor-ring"></span>`;
   const s = el.style;
   s.setProperty('position', 'fixed', 'important');
   s.setProperty('top', '0', 'important');
@@ -578,11 +1550,7 @@ function dispatchPointerClick(el, x, y) {
       new PointerEvent('pointerdown', mouseEventInit(x, y, { ...common, buttons: 1, detail: 1 }))
     );
     target.dispatchEvent(new MouseEvent('mousedown', mouseEventInit(x, y, { buttons: 1, detail: 1 })));
-    try {
-      target.focus?.({ preventScroll: true });
-    } catch {
-      target.focus?.();
-    }
+    safeFocus(target);
     target.dispatchEvent(
       new PointerEvent('pointerup', mouseEventInit(x, y, { ...common, buttons: 0, detail: 1 }))
     );
@@ -708,7 +1676,7 @@ async function handleDomCommand(command, args) {
       el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'auto' });
       await sleep(50);
       await pointAtElement(el, '聚焦');
-      el.focus();
+      safeFocus(el);
       return { ok: true };
     }
 
@@ -823,13 +1791,14 @@ async function handleDomCommand(command, args) {
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'ping') {
-    sendResponse({ ok: true });
+    sendResponse({ ok: true, palette: typeof window.ForgePalette?.mount === 'function' });
     return true;
   }
 
   if (msg.type === 'agent-ui-enable') {
     try {
-      window.__gcbAgent?.enable();
+      if (msg.enabled === false) window.__gcbAgent?.disable();
+      else if (!msg.trusted) window.__gcbAgent?.enable();
     } catch {}
     sendResponse({ ok: true });
     return true;
@@ -842,9 +1811,37 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 
-  if (msg.type === 'picker-cancel') {
-    stopPicker({ cancelled: true });
+  if (msg.type === 'place-start') {
+    startPlacer(msg.component)
+      .then((result) => sendResponse(result))
+      .catch((err) => sendResponse({ error: err.message || String(err) }));
+    return true;
+  }
+
+  if (msg.type === 'picker-cancel' || msg.type === 'place-cancel') {
+    stopOverlay({ cancelled: true });
+    dismissPlaceGhost();
     sendResponse({ cancelled: true });
+    return true;
+  }
+
+  if (msg.type === 'place-dismiss') {
+    stopOverlay({ cancelled: true });
+    undoLastPlaceGhost();
+    sendResponse({ cancelled: true });
+    return true;
+  }
+
+  if (msg.type === 'place-commit') {
+    markPlaceGhostCommitted();
+    const places = placeListPayload();
+    sendResponse({ ok: true, places, layout: layoutComposition(places) });
+    return true;
+  }
+
+  if (msg.type === 'place-restore') {
+    restorePlaceGhosts(msg.places);
+    sendResponse({ ok: true, places: placeListPayload() });
     return true;
   }
 
@@ -855,4 +1852,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 });
+
+try {
+  chrome.runtime.sendMessage({ type: 'place-restore-request', url: location.href }, (res) => {
+    void chrome.runtime.lastError;
+    if (!res?.places?.length) return;
+    restorePlaceGhosts(res.places);
+    if (placeGhosts.length) broadcastPlaces();
+  });
+} catch {}
 })();

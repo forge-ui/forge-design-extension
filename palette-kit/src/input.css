@@ -1,0 +1,88 @@
+@import "tailwindcss";
+@import "@forge-ui-official/core/styles.css";
+@source "../node_modules/@forge-ui-official/core/dist";
+@source "./samples.jsx";
+@source "./mount.jsx";
+
+.fp-stage {
+  zoom: 0.72;
+  width: 360px;
+  padding: 12px;
+  pointer-events: none;
+  font-family: Manrope, ui-sans-serif, system-ui, sans-serif;
+  background: #fff;
+  color: var(--fg-black, #000a19);
+}
+
+.fp-stage.is-tight {
+  zoom: 1;
+  width: 100%;
+  min-height: 220px;
+  padding: 24px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.fp-stage.is-wide {
+  zoom: 0.52;
+  width: 640px;
+  padding: 12px;
+}
+
+.fp-stage.is-layout {
+  zoom: 0.3;
+  width: 1100px;
+  height: 720px;
+  padding: 0;
+  overflow: hidden;
+  background: #fafafa;
+}
+
+.fp-stage.is-layout [data-forge-app-layout] {
+  min-height: 720px !important;
+  height: 720px !important;
+}
+
+.fp-stage.is-layout [data-forge-app-sidebar] {
+  position: relative !important;
+  inset: auto !important;
+  transform: none !important;
+  translate: none !important;
+  height: 720px !important;
+  max-width: 16rem !important;
+}
+
+.fp-stage.is-layout [data-forge-app-overlay] {
+  display: none !important;
+}
+
+.fp-stage.is-hairline {
+  zoom: 1;
+  width: 100%;
+  height: 100%;
+  min-height: 220px;
+  padding: 0 20px;
+  display: flex;
+  align-items: center;
+}
+
+.fp-stage.is-ghost,
+.fp-stage.is-ghost.is-tight,
+.fp-stage.is-ghost.is-wide,
+.fp-stage.is-ghost.is-layout,
+.fp-stage.is-ghost.is-hairline {
+  zoom: 1 !important;
+  width: 100% !important;
+  height: auto !important;
+  min-height: 0 !important;
+  padding: 0 !important;
+  overflow: visible !important;
+  background: transparent;
+}
+
+.fp-error {
+  color: #fe4a23;
+  font: 600 12px/1.35 Manrope, ui-sans-serif, system-ui, sans-serif;
+  padding: 8px;
+}

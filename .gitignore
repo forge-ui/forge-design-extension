@@ -1,6 +1,7 @@
 node_modules/
 .bridge-state.json
 .bridge-pick.json
+.bridge-place.json
 .bridge-home
 .DS_Store
 *.log

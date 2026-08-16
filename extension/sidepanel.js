@@ -20,6 +20,373 @@ const dirList = document.getElementById('dirList');
 const dirNow = document.getElementById('dirNow');
 const dirForm = document.getElementById('dirForm');
 const dirInput = document.getElementById('dirInput');
+const palette = document.getElementById('palette');
+const paletteBtn = document.getElementById('paletteBtn');
+const paletteBody = document.getElementById('paletteBody');
+const paletteSearch = document.getElementById('paletteSearch');
+const paletteEmpty = document.getElementById('paletteEmpty');
+const placeBanner = document.getElementById('placeBanner');
+const placeBannerText = document.getElementById('placeBannerText');
+const commitPlaceBtn = document.getElementById('commitPlaceBtn');
+
+const PALETTE_CATEGORIES = [
+  { id: 'chrome', name: '壳' },
+  { id: 'table', name: '表格' },
+  { id: 'list', name: '列表' },
+  { id: 'metric', name: '指标' },
+  { id: 'chart', name: '图表' },
+  { id: 'card', name: '卡片' },
+  { id: 'form', name: '表单' },
+  { id: 'social', name: '社交' },
+  { id: 'calendar', name: '日历' },
+  { id: 'action', name: '动作' },
+  { id: 'foundation', name: '基础' },
+];
+
+const CHART_COLORS = ['purple', 'blue', 'green', 'red', 'orange', 'yellow', 'cyan'];
+const CARD_THEMES = ['white', 'black', 'purple', 'blue', 'green', 'red', 'yellow', 'cyan'];
+
+function vars(ids, prop) {
+  return ids.map((id) => ({ id, hint: `${prop}="${id}"` }));
+}
+
+function one(id = 'default', hint = '') {
+  return [{ id, hint }];
+}
+
+const FORGE_BLOCKS = [
+  { id: 'app-layout', name: 'AppLayout', category: 'chrome', kind: 'layout', exportName: 'AppLayout', variants: vars(['light', 'dark'], 'mode') },
+  { id: 'top-bar', name: 'TopBar', category: 'chrome', kind: 'header', exportName: 'TopBar', variants: one() },
+  {
+    id: 'page-header',
+    name: 'PageHeader',
+    category: 'chrome',
+    kind: 'header',
+    exportName: 'PageHeader',
+    variants: [
+      { id: 'title', hint: 'variant="title"' },
+      { id: 'search', hint: 'variant="search"' },
+    ],
+  },
+  {
+    id: 'page-title-toolbar',
+    name: 'PageTitleToolbar',
+    category: 'chrome',
+    kind: 'header',
+    exportName: 'PageTitleToolbar',
+    variants: vars(['overview', 'collection', 'detail', 'action'], 'variant'),
+  },
+  { id: 'toolbar', name: 'Toolbar', category: 'chrome', kind: 'filter', exportName: 'Toolbar', variants: one() },
+  { id: 'toolbar-search', name: 'ToolbarSearchInput', category: 'chrome', kind: 'filter', exportName: 'ToolbarSearchInput', variants: one() },
+  { id: 'toolbar-select', name: 'ToolbarSelectDropdown', category: 'chrome', kind: 'filter', exportName: 'ToolbarSelectDropdown', variants: one() },
+  { id: 'toolbar-datepicker', name: 'ToolbarDatepicker', category: 'chrome', kind: 'filter', exportName: 'ToolbarDatepicker', variants: one() },
+  { id: 'toolbar-filter', name: 'ToolbarFilterButton', category: 'chrome', kind: 'filter', exportName: 'ToolbarFilterButton', variants: one() },
+  { id: 'toolbar-show', name: 'ToolbarShowSelect', category: 'chrome', kind: 'filter', exportName: 'ToolbarShowSelect', variants: one() },
+  { id: 'toolbar-actions', name: 'ToolbarActions', category: 'chrome', kind: 'filter', exportName: 'ToolbarActions', variants: one() },
+  { id: 'toolbar-kebab', name: 'ToolbarKebabButton', category: 'chrome', kind: 'iconbtn', exportName: 'ToolbarKebabButton', variants: one() },
+  { id: 'toolbar-favorite', name: 'ToolbarFavoriteButton', category: 'chrome', kind: 'iconbtn', exportName: 'ToolbarFavoriteButton', variants: one() },
+  { id: 'toolbar-pill-tabs', name: 'ToolbarPillTabs', category: 'chrome', kind: 'tabs', exportName: 'ToolbarPillTabs', variants: one() },
+  { id: 'breadcrumbs', name: 'Breadcrumbs', category: 'chrome', kind: 'crumbs', exportName: 'Breadcrumbs', variants: one() },
+  { id: 'sidebar-menu', name: 'SidebarMenu', category: 'chrome', kind: 'nav', exportName: 'SidebarMenu', variants: one() },
+  {
+    id: 'tab-bar',
+    name: 'TabBar',
+    category: 'chrome',
+    kind: 'tabs',
+    exportName: 'TabBar',
+    variants: [
+      { id: 'inline', hint: 'surface="inline"' },
+      { id: 'page', hint: 'surface="page"' },
+    ],
+  },
+  { id: 'pagination', name: 'Pagination', category: 'list', kind: 'pager', exportName: 'Pagination', variants: one() },
+  { id: 'stepper', name: 'Stepper', category: 'list', kind: 'steps', exportName: 'Stepper', variants: one() },
+  { id: 'page-dot', name: 'PageDot', category: 'list', kind: 'chip', exportName: 'PageDot', variants: one() },
+  { id: 'data-table', name: 'DataTable', category: 'table', kind: 'table', exportName: 'DataTable', variants: one() },
+  { id: 'full-width-table', name: 'FullWidthTable', category: 'table', kind: 'table', exportName: 'FullWidthTable', variants: one() },
+  {
+    id: 'table-cell',
+    name: 'TableCell',
+    category: 'table',
+    kind: 'cell',
+    exportName: 'TableCell',
+    variants: [
+      { id: 'body', hint: 'variant="body"' },
+      { id: 'header', hint: 'variant="header"' },
+    ],
+  },
+  { id: 'cell-text', name: 'CellText', category: 'table', kind: 'cell', exportName: 'CellText', variants: one() },
+  { id: 'cell-text-subtitle', name: 'CellTextSubtitle', category: 'table', kind: 'cell', exportName: 'CellTextSubtitle', variants: one() },
+  { id: 'cell-muted', name: 'CellMuted', category: 'table', kind: 'cell', exportName: 'CellMuted', variants: one() },
+  { id: 'cell-image-text', name: 'CellImageText', category: 'table', kind: 'cell', exportName: 'CellImageText', variants: one() },
+  {
+    id: 'status-badge',
+    name: 'StatusBadge',
+    category: 'table',
+    kind: 'cell',
+    exportName: 'StatusBadge',
+    variants: vars(['green', 'yellow', 'red', 'grey'], 'color'),
+  },
+  {
+    id: 'progress-badge',
+    name: 'ProgressBadge',
+    category: 'table',
+    kind: 'cell',
+    exportName: 'ProgressBadge',
+    variants: vars(['green', 'red', 'grey'], 'color'),
+  },
+  { id: 'cell-progress-value', name: 'CellProgressValue', category: 'table', kind: 'cell', exportName: 'CellProgressValue', variants: one() },
+  { id: 'cell-kebab', name: 'CellKebabMenu', category: 'table', kind: 'cell', exportName: 'CellKebabMenu', variants: one() },
+  { id: 'cell-status-dot', name: 'CellStatusDot', category: 'table', kind: 'cell', exportName: 'CellStatusDot', variants: one() },
+  { id: 'cell-number', name: 'CellNumber', category: 'table', kind: 'cell', exportName: 'CellNumber', variants: one() },
+  { id: 'cell-progress-bar', name: 'CellProgressBar', category: 'table', kind: 'cell', exportName: 'CellProgressBar', variants: one() },
+  { id: 'cell-code', name: 'CellCode', category: 'table', kind: 'cell', exportName: 'CellCode', variants: one() },
+  { id: 'cell-rating', name: 'CellRating', category: 'table', kind: 'cell', exportName: 'CellRating', variants: one() },
+  { id: 'cell-file', name: 'CellFile', category: 'table', kind: 'cell', exportName: 'CellFile', variants: one() },
+  { id: 'cell-actions', name: 'CellActions', category: 'table', kind: 'cell', exportName: 'CellActions', variants: one() },
+  { id: 'cell-link', name: 'CellLink', category: 'table', kind: 'cell', exportName: 'CellLink', variants: one() },
+  { id: 'list-group', name: 'ListGroup', category: 'list', kind: 'list', exportName: 'ListGroup', variants: one() },
+  { id: 'list-item', name: 'ListItem', category: 'list', kind: 'list', exportName: 'ListItem', variants: one() },
+  { id: 'description-item', name: 'DescriptionItem', category: 'list', kind: 'list', exportName: 'DescriptionItem', variants: one() },
+  { id: 'filter-group', name: 'FilterGroup', category: 'list', kind: 'filter', exportName: 'FilterGroup', variants: one() },
+  { id: 'filter-trigger', name: 'FilterTrigger', category: 'list', kind: 'filter', exportName: 'FilterTrigger', variants: one() },
+  { id: 'filter-panel', name: 'FilterPanel', category: 'list', kind: 'filter', exportName: 'FilterPanel', variants: one() },
+  {
+    id: 'button-group',
+    name: 'ButtonGroup',
+    category: 'list',
+    kind: 'filter',
+    exportName: 'ButtonGroup',
+    variants: [
+      { id: 'pill', hint: 'shape="pill"' },
+      { id: 'rounded', hint: 'shape="rounded"' },
+    ],
+  },
+  {
+    id: 'stat-card',
+    name: 'StatCard',
+    category: 'metric',
+    kind: 'stat-plain',
+    exportName: 'StatCard',
+    variants: [
+      { id: 'sm', hint: 'size="sm"' },
+      { id: 'lg', hint: 'size="lg"' },
+      { id: 'wide', hint: 'size="wide"' },
+      ...vars(CARD_THEMES, 'theme'),
+    ],
+  },
+  { id: 'progress-stat', name: 'ProgressStatCard', category: 'metric', kind: 'stat-bar', exportName: 'ProgressStatCard', variants: one() },
+  { id: 'line-stat', name: 'LineChartStatCard', category: 'metric', kind: 'stat', exportName: 'LineChartStatCard', variants: vars(CHART_COLORS, 'chartColor') },
+  { id: 'bar-stat', name: 'BarChartStatCard', category: 'metric', kind: 'stat-bar', exportName: 'BarChartStatCard', variants: vars(CHART_COLORS, 'chartColor') },
+  { id: 'wheel-stat', name: 'WheelChartStatCard', category: 'metric', kind: 'stat-wheel', exportName: 'WheelChartStatCard', variants: vars(CHART_COLORS, 'chartColor') },
+  { id: 'progress-bar', name: 'ProgressBar', category: 'metric', kind: 'bar', exportName: 'ProgressBar', variants: one() },
+  { id: 'progress-card', name: 'ProgressCard', category: 'metric', kind: 'card', exportName: 'ProgressCard', variants: one() },
+  { id: 'image-stat', name: 'ImageStatCard', category: 'metric', kind: 'card', exportName: 'ImageStatCard', variants: one() },
+  { id: 'chart-card', name: 'ChartCard', category: 'chart', kind: 'chart', exportName: 'ChartCard', variants: one() },
+  { id: 'chart-list-item', name: 'ChartListItem', category: 'chart', kind: 'list', exportName: 'ChartListItem', variants: one() },
+  { id: 'chart-legend-item', name: 'ChartLegendItem', category: 'chart', kind: 'list', exportName: 'ChartLegendItem', variants: one() },
+  { id: 'chart-value-row', name: 'ChartValueRow', category: 'chart', kind: 'list', exportName: 'ChartValueRow', variants: one() },
+  { id: 'chart-stat-footer', name: 'ChartStatFooter', category: 'chart', kind: 'list', exportName: 'ChartStatFooter', variants: one() },
+  { id: 'meter-chart', name: 'MeterChart', category: 'chart', kind: 'chart', exportName: 'MeterChart', variants: one() },
+  { id: 'donut-chart', name: 'DonutChart', category: 'chart', kind: 'chart', exportName: 'DonutChart', variants: one() },
+  { id: 'half-donut', name: 'HalfDonutChart', category: 'chart', kind: 'chart', exportName: 'HalfDonutChart', variants: one() },
+  { id: 'dashed-half-donut', name: 'DashedHalfDonutChart', category: 'chart', kind: 'chart', exportName: 'DashedHalfDonutChart', variants: one() },
+  { id: 'pie-chart', name: 'PieChart', category: 'chart', kind: 'chart', exportName: 'PieChart', variants: one() },
+  { id: 'multi-donut', name: 'MultilayerDonutChart', category: 'chart', kind: 'chart', exportName: 'MultilayerDonutChart', variants: one() },
+  { id: 'bubble-chart', name: 'BubbleChart', category: 'chart', kind: 'chart', exportName: 'BubbleChart', variants: one() },
+  { id: 'bar-chart', name: 'BarChart', category: 'chart', kind: 'stat-bar', exportName: 'BarChart', variants: one() },
+  { id: 'bar-h-chart', name: 'BarHorizontalChart', category: 'chart', kind: 'stat-bar', exportName: 'BarHorizontalChart', variants: one() },
+  { id: 'bar-up-chart', name: 'BarUpsideDownChart', category: 'chart', kind: 'stat-bar', exportName: 'BarUpsideDownChart', variants: one() },
+  { id: 'smooth-line', name: 'SmoothLineChart', category: 'chart', kind: 'chart', exportName: 'SmoothLineChart', variants: one() },
+  { id: 'surface-card', name: 'SurfaceCard', category: 'card', kind: 'card', exportName: 'SurfaceCard', variants: vars(['none', 'sm', 'md', 'lg'], 'padding') },
+  { id: 'project-card', name: 'ProjectCard', category: 'card', kind: 'card', exportName: 'ProjectCard', variants: one() },
+  { id: 'task-card', name: 'TaskCard', category: 'card', kind: 'card', exportName: 'TaskCard', variants: one() },
+  { id: 'user-card', name: 'UserCard', category: 'card', kind: 'card', exportName: 'UserCard', variants: one() },
+  { id: 'balance-card', name: 'BalanceCard', category: 'card', kind: 'card', exportName: 'BalanceCard', variants: one() },
+  { id: 'debit-card', name: 'DebitCard', category: 'card', kind: 'card', exportName: 'DebitCard', variants: one() },
+  { id: 'credit-card', name: 'CreditCard', category: 'card', kind: 'card', exportName: 'CreditCard', variants: one() },
+  { id: 'highlight-card', name: 'HighlightCard', category: 'card', kind: 'card', exportName: 'HighlightCard', variants: one() },
+  { id: 'activity-card', name: 'ActivityCard', category: 'card', kind: 'card', exportName: 'ActivityCard', variants: one() },
+  { id: 'profile-card', name: 'ProfileCard', category: 'card', kind: 'card', exportName: 'ProfileCard', variants: one() },
+  { id: 'map-card', name: 'MapCard', category: 'card', kind: 'card', exportName: 'MapCard', variants: vars(['sm', 'md', 'lg'], 'variant') },
+  { id: 'product-row', name: 'ProductRow', category: 'card', kind: 'list', exportName: 'ProductRow', variants: one() },
+  {
+    id: 'text-field',
+    name: 'TextField',
+    category: 'form',
+    kind: 'field',
+    exportName: 'TextField',
+    variants: [
+      { id: 'rounded', hint: 'shape="rounded"' },
+      { id: 'pill', hint: 'shape="pill"' },
+    ],
+  },
+  { id: 'text-field-select-suffix', name: 'TextFieldSelectSuffix', category: 'form', kind: 'field', exportName: 'TextFieldSelectSuffix', variants: one() },
+  {
+    id: 'text-area',
+    name: 'TextArea',
+    category: 'form',
+    kind: 'area',
+    exportName: 'TextArea',
+    variants: [
+      { id: 'rounded', hint: 'shape="rounded"' },
+      { id: 'pill', hint: 'shape="pill"' },
+    ],
+  },
+  {
+    id: 'select-option',
+    name: 'SelectOption',
+    category: 'form',
+    kind: 'select',
+    exportName: 'SelectOption',
+    variants: vars(['general', 'single', 'multiple', 'image'], 'type'),
+  },
+  {
+    id: 'datepicker',
+    name: 'Datepicker',
+    category: 'form',
+    kind: 'field',
+    exportName: 'Datepicker',
+    variants: [
+      { id: 'single', hint: 'mode="single"' },
+      { id: 'range', hint: 'mode="range"' },
+    ],
+  },
+  { id: 'toggle', name: 'Toggle', category: 'form', kind: 'toggle', exportName: 'Toggle', variants: one() },
+  { id: 'radio', name: 'RadioWithLabel', category: 'form', kind: 'check', exportName: 'RadioWithLabel', extras: ['RadioButton'], variants: one() },
+  { id: 'checkbox', name: 'CheckboxWithLabel', category: 'form', kind: 'check', exportName: 'CheckboxWithLabel', extras: ['Checkbox', 'CheckboxControl'], variants: one() },
+  { id: 'file-upload', name: 'FileUpload', category: 'form', kind: 'upload', exportName: 'FileUpload', extras: ['FileCard'], variants: one() },
+  { id: 'file-card', name: 'FileCard', category: 'form', kind: 'upload', exportName: 'FileCard', variants: one() },
+  { id: 'media-upload', name: 'MediaUpload', category: 'form', kind: 'upload', exportName: 'MediaUpload', variants: one() },
+  { id: 'profile-upload', name: 'ProfileImgUpload', category: 'form', kind: 'avatar', exportName: 'ProfileImgUpload', variants: one() },
+  { id: 'icon-picker', name: 'IconPicker', category: 'form', kind: 'field', exportName: 'IconPicker', extras: ['IconSelector'], variants: one() },
+  { id: 'icon-selector', name: 'IconSelector', category: 'form', kind: 'field', exportName: 'IconSelector', variants: one() },
+  { id: 'color-picker', name: 'ColorPicker', category: 'form', kind: 'field', exportName: 'ColorPicker', variants: one() },
+  { id: 'contact-item', name: 'ContactItem', category: 'social', kind: 'list', exportName: 'ContactItem', variants: one() },
+  { id: 'chat-bubble', name: 'ChatBubble', category: 'social', kind: 'chat', exportName: 'ChatBubble', variants: one() },
+  { id: 'chat-input', name: 'ChatInputBar', category: 'social', kind: 'field', exportName: 'ChatInputBar', variants: one() },
+  { id: 'comment-item', name: 'CommentItem', category: 'social', kind: 'list', exportName: 'CommentItem', variants: one() },
+  {
+    id: 'review-item',
+    name: 'ReviewItem',
+    category: 'social',
+    kind: 'list',
+    exportName: 'ReviewItem',
+    variants: [
+      { id: 'card', hint: 'variant="card"' },
+      { id: 'regular', hint: 'variant="regular"' },
+    ],
+  },
+  { id: 'notification-item', name: 'NotificationItem', category: 'social', kind: 'list', exportName: 'NotificationItem', variants: one() },
+  {
+    id: 'history-item',
+    name: 'HistoryItem',
+    category: 'social',
+    kind: 'list',
+    exportName: 'HistoryItem',
+    variants: vars(['regular', 'badge', 'profile'], 'variant'),
+  },
+  { id: 'history-grouped', name: 'HistoryGrouped', category: 'social', kind: 'list', exportName: 'HistoryGrouped', variants: one() },
+  { id: 'avatar', name: 'Avatar', category: 'social', kind: 'avatar', exportName: 'Avatar', variants: one() },
+  { id: 'avatar-group', name: 'AvatarGroup', category: 'social', kind: 'avatar', exportName: 'AvatarGroup', variants: one() },
+  {
+    id: 'label',
+    name: 'Label',
+    category: 'social',
+    kind: 'chip',
+    exportName: 'Label',
+    variants: [
+      { id: 'outline', hint: 'variant="outline"' },
+      { id: 'solid', hint: 'variant="solid"' },
+    ],
+  },
+  { id: 'badge', name: 'NotificationBadge', category: 'social', kind: 'chip', exportName: 'NotificationBadge', variants: one() },
+  {
+    id: 'circle-icon',
+    name: 'CircleIcon',
+    category: 'foundation',
+    kind: 'chip',
+    exportName: 'CircleIcon',
+    variants: [
+      { id: 'solid', hint: 'variant="solid"' },
+      { id: 'light', hint: 'variant="light"' },
+      { id: 'neutral', hint: 'variant="neutral"' },
+    ],
+  },
+  {
+    id: 'artistic-icon',
+    name: 'ArtisticIcon',
+    category: 'foundation',
+    kind: 'chip',
+    exportName: 'ArtisticIcon',
+    variants: [
+      { id: 'gradient', hint: 'variant="gradient"' },
+      { id: 'orbs', hint: 'variant="orbs"' },
+    ],
+  },
+  { id: 'file-type-icon', name: 'FileTypeIcon', category: 'foundation', kind: 'chip', exportName: 'FileTypeIcon', variants: one() },
+  { id: 'color-swatch', name: 'ColorSwatch', category: 'foundation', kind: 'chip', exportName: 'ColorSwatch', variants: one() },
+  { id: 'color-section', name: 'ColorSection', category: 'foundation', kind: 'card', exportName: 'ColorSection', variants: one() },
+  { id: 'typeface-block', name: 'TypefaceBlock', category: 'foundation', kind: 'card', exportName: 'TypefaceBlock', variants: one() },
+  { id: 'typography-weight', name: 'TypographyWeightSample', category: 'foundation', kind: 'chip', exportName: 'TypographyWeightSample', variants: one() },
+  { id: 'typography-size', name: 'TypographySizeRow', category: 'foundation', kind: 'card', exportName: 'TypographySizeRow', variants: one() },
+  { id: 'small-calendar', name: 'SmallCalendar', category: 'calendar', kind: 'cal', exportName: 'SmallCalendar', variants: one() },
+  { id: 'daily-calendar', name: 'SmallDailyCalendar', category: 'calendar', kind: 'cal', exportName: 'SmallDailyCalendar', variants: one() },
+  { id: 'full-calendar', name: 'FullCalendar', category: 'calendar', kind: 'cal', exportName: 'FullCalendar', variants: one() },
+  { id: 'event-card', name: 'EventCard', category: 'calendar', kind: 'card', exportName: 'EventCard', variants: one() },
+  { id: 'event-tag', name: 'EventTag', category: 'calendar', kind: 'chip', exportName: 'EventTag', variants: one() },
+  { id: 'calendar-day-cell', name: 'CalendarDayCell', category: 'calendar', kind: 'cal', exportName: 'CalendarDayCell', variants: one() },
+  { id: 'calendar-week-row', name: 'CalendarWeekRow', category: 'calendar', kind: 'cal', exportName: 'CalendarWeekRow', variants: one() },
+  {
+    id: 'button',
+    name: 'Button',
+    category: 'action',
+    kind: 'button',
+    exportName: 'Button',
+    variants: [
+      { id: 'primary', hint: 'variant="primary"' },
+      { id: 'secondary', hint: 'variant="secondary"' },
+      { id: 'tertiary', hint: 'variant="tertiary"' },
+    ],
+  },
+  {
+    id: 'icon-button',
+    name: 'IconButton',
+    category: 'action',
+    kind: 'iconbtn',
+    exportName: 'IconButton',
+    variants: [
+      { id: 'primary', hint: 'variant="primary"' },
+      { id: 'secondary', hint: 'variant="secondary"' },
+      { id: 'tertiary', hint: 'variant="tertiary"' },
+      { id: 'ghost', hint: 'variant="ghost"' },
+    ],
+  },
+  { id: 'styled-link', name: 'StyledLink', category: 'action', kind: 'link', exportName: 'StyledLink', variants: one() },
+  {
+    id: 'confirm-dialog',
+    name: 'ConfirmationDialog',
+    category: 'action',
+    kind: 'dialog',
+    exportName: 'ConfirmationDialog',
+    variants: [
+      { id: 'purple', hint: 'color="purple" layout="spread"' },
+      { id: 'red', hint: 'color="red" layout="spread"' },
+      { id: 'green', hint: 'color="green" layout="spread"' },
+      { id: 'yellow', hint: 'color="yellow" layout="spread"' },
+      { id: 'blue', hint: 'color="blue" layout="spread"' },
+      { id: 'right', hint: 'color="purple" layout="right"' },
+    ],
+  },
+  { id: 'tooltip', name: 'Tooltip', category: 'action', kind: 'chip', exportName: 'Tooltip', extras: ['TooltipBubble', 'TooltipAnchor'], variants: one() },
+  { id: 'dropdown', name: 'DropdownPanel', category: 'action', kind: 'menu', exportName: 'DropdownPanel', extras: ['DropdownDivider'], variants: one() },
+  { id: 'kebab-menu', name: 'KebabMenu', category: 'action', kind: 'menu', exportName: 'KebabMenu', variants: one() },
+  { id: 'menu-item', name: 'MenuItem', category: 'action', kind: 'menu', exportName: 'MenuItem', variants: one() },
+  { id: 'icon-trigger', name: 'IconTrigger', category: 'action', kind: 'iconbtn', exportName: 'IconTrigger', variants: one() },
+  { id: 'currency', name: 'CurrencyConverter', category: 'action', kind: 'card', exportName: 'CurrencyConverter', variants: one() },
+  { id: 'rating', name: 'RatingStars', category: 'action', kind: 'chip', exportName: 'RatingStars', variants: one() },
+  { id: 'image-grid', name: 'ImageGrid', category: 'card', kind: 'card', exportName: 'ImageGrid', variants: one() },
+];
 
 let port = 3847;
 let token = '';
@@ -29,6 +396,10 @@ let currentCwd = '';
 let current = { id: null, cwd: null, title: '新对话', messages: [] };
 let includePick = false;
 let lastPick = null;
+let lastPlace = null;
+let placing = null;
+let pendingPlaces = [];
+let handledPlaceAt = '';
 let sending = false;
 let stickToBottom = true;
 let lastThreadScrollTop = 0;
@@ -237,6 +608,306 @@ function renderPickChip() {
   clearPickBtn.hidden = false;
 }
 
+const KIT_HREF = 'vendor/forge-kit.css';
+
+function mountForgePreview(host, spec) {
+  const shadow = host.attachShadow({ mode: 'open' });
+  const stage = document.createElement('div');
+  shadow.append(stage);
+  const io = new IntersectionObserver((entries) => {
+    if (!entries.some((entry) => entry.isIntersecting)) return;
+    io.disconnect();
+    const api = window.ForgePalette;
+    if (!api?.mount) {
+      stage.textContent = spec.exportName || spec.name || 'Forge';
+      return;
+    }
+    Promise.resolve(api.adoptKit ? api.adoptKit(shadow, KIT_HREF) : null).then(() => {
+      api.mount(stage, spec);
+    });
+  }, { rootMargin: '200px' });
+  io.observe(host);
+}
+
+const KIND_ALIASES = {
+  table: '表格 表',
+  cell: '单元格 格子 单元格组件',
+  button: '按钮',
+  iconbtn: '图标按钮',
+  card: '卡片',
+  field: '输入框 表单',
+  area: '文本域',
+  select: '下拉 选择',
+  chart: '图表',
+  layout: '布局 壳',
+  list: '列表',
+  chip: '标签 徽章 图标',
+  dialog: '对话框 弹窗',
+  cal: '日历',
+  nav: '导航 侧栏',
+  header: '顶栏 页头',
+  filter: '筛选 工具栏 toolbar 搜索',
+  menu: '菜单',
+  pager: '分页',
+  tabs: '标签页',
+  toggle: '开关',
+  upload: '上传 文件',
+  avatar: '头像',
+  link: '链接',
+  foundation: '基础 色板 字体 style guide',
+};
+
+function blockSearchText(block) {
+  const cat = PALETTE_CATEGORIES.find((item) => item.id === block.category);
+  return [
+    block.name,
+    block.exportName,
+    block.id,
+    block.kind,
+    cat?.id,
+    cat?.name,
+    ...(block.extras || []),
+    ...(block.variants || []).map((item) => `${item.id} ${item.hint || ''}`),
+    KIND_ALIASES[block.kind] || '',
+    KIND_ALIASES[block.category] || '',
+  ].join(' ').toLowerCase();
+}
+
+function filterPalette() {
+  const query = (paletteSearch.value || '').trim().toLowerCase();
+  let shown = 0;
+  paletteBody.querySelectorAll('.palette-section').forEach((section) => {
+    let visible = 0;
+    section.querySelectorAll('.palette-group').forEach((group) => {
+      const hit = !query || (group.dataset.search || '').includes(query);
+      group.hidden = !hit;
+      if (hit) visible += 1;
+    });
+    section.hidden = visible === 0;
+    shown += visible;
+  });
+  paletteEmpty.hidden = shown > 0;
+}
+
+function renderPalette() {
+  paletteBody.innerHTML = '';
+  for (const cat of PALETTE_CATEGORIES) {
+    const blocks = FORGE_BLOCKS.filter((item) => item.category === cat.id);
+    if (!blocks.length) continue;
+    const section = document.createElement('section');
+    section.className = 'palette-section';
+    const heading = document.createElement('div');
+    heading.className = 'palette-section-title';
+    heading.textContent = cat.name;
+    section.appendChild(heading);
+    for (const block of blocks) {
+      const group = document.createElement('div');
+      group.className = 'palette-group';
+      group.dataset.search = blockSearchText(block);
+      const title = document.createElement('div');
+      title.className = 'palette-group-name';
+      title.textContent = block.name;
+      group.appendChild(title);
+      const row = document.createElement('div');
+      row.className = 'palette-variants';
+      for (const variant of block.variants) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'palette-item';
+        btn.title = variant.hint ? `${block.name} · ${variant.hint}` : block.name;
+        const host = document.createElement('div');
+        host.className = 'fp-host';
+        btn.appendChild(host);
+        mountForgePreview(host, {
+          exportName: block.exportName,
+          name: block.name,
+          variant: variant.id,
+          kind: block.kind,
+        });
+        if (variant.id && variant.id !== 'default') {
+          const label = document.createElement('span');
+          label.className = 'palette-var';
+          label.textContent = variant.id;
+          btn.appendChild(label);
+        }
+        btn.addEventListener('click', () => startPlace(block, variant));
+        row.appendChild(btn);
+      }
+      group.appendChild(row);
+      section.appendChild(group);
+    }
+    paletteBody.appendChild(section);
+  }
+  filterPalette();
+}
+
+let paletteReady = false;
+
+function setPaletteOpen(open) {
+  palette.hidden = !open;
+  paletteBtn.classList.toggle('active', open || !!placing || pendingPlaces.length > 0);
+  if (open) {
+    moreMenu.hidden = true;
+    if (!paletteReady) {
+      paletteReady = true;
+      renderPalette();
+    }
+    requestAnimationFrame(() => {
+      paletteSearch.focus();
+      paletteSearch.select();
+    });
+  }
+}
+
+function renderPlaceBanner() {
+  const on = !!(placing || pendingPlaces.length);
+  placeBanner.hidden = !on;
+  commitPlaceBtn.hidden = pendingPlaces.length === 0;
+  paletteBtn.classList.toggle('active', on || !palette.hidden);
+  if (pendingPlaces.length && placing) {
+    placeBannerText.textContent = `${placing.name} · ${pendingPlaces.length}`;
+  } else if (pendingPlaces.length) {
+    placeBannerText.textContent = `${pendingPlaces.length} 个组件`;
+  } else if (placing) {
+    placeBannerText.textContent = placing.name;
+  }
+}
+
+function positionLabel(position) {
+  if (position === 'before') return '上方';
+  if (position === 'left') return '左侧';
+  if (position === 'right') return '右侧';
+  if (position === 'inside') return '内部';
+  return '下方';
+}
+
+function componentLabel(component) {
+  if (!component) return 'Forge';
+  if (component.variant && component.variant !== 'default') {
+    return `${component.name}（${component.variant}）`;
+  }
+  return component.name;
+}
+
+function syncPendingPlaces(places, { keepPlacing } = {}) {
+  pendingPlaces = Array.isArray(places) ? places : [];
+  if (!keepPlacing) placing = null;
+  renderPlaceBanner();
+  if (pendingPlaces.length) {
+    const last = pendingPlaces[pendingPlaces.length - 1];
+    if (last?.pick?.selector) {
+      lastPick = last.pick;
+      includePick = true;
+      renderPickChip();
+    }
+    setPaletteOpen(true);
+  }
+}
+
+function applyPlaces(places) {
+  const batch = Array.isArray(places) ? places.filter((item) => item?.component) : [];
+  if (!batch.length) return;
+  const key = batch.map((item) => item.placedAt).join('|');
+  if (key === handledPlaceAt) return;
+  handledPlaceAt = key;
+  lastPlace = batch[0];
+  pendingPlaces = [];
+  placing = null;
+  setPaletteOpen(false);
+  renderPlaceBanner();
+  if (batch[0].pick?.selector) {
+    lastPick = batch[0].pick;
+    includePick = true;
+    renderPickChip();
+  }
+  const extra = input.value.trim();
+  input.value = '';
+  resizeInput();
+  const lines = batch.map((item, index) => {
+    const n = item.index || index + 1;
+    const name = componentLabel(item.component);
+    if (item.relativeToIndex && item.position === 'inside') {
+      const cell = item.slot?.text
+        ? `单元格「${item.slot.text}」`
+        : item.slot?.col >= 0
+          ? `第 ${item.slot.row + 1} 行第 ${item.slot.col + 1} 列`
+          : '内部';
+      return `${n}. 叠在 #${item.relativeToIndex} 的${cell}插入 ${name}`;
+    }
+    if (item.relativeToIndex) {
+      return `${n}. 在 #${item.relativeToIndex} 的${positionLabel(item.position)}插入 ${name}`;
+    }
+    const anchor = item.pick?.text || item.pick?.selector || '这个位置';
+    return `${n}. 在「${anchor}」${positionLabel(item.position)}插入 ${name}`;
+  });
+  const rows = batch.some((item) => item.relativeToIndex && (item.position === 'left' || item.position === 'right'));
+  const layoutNote = rows ? '同一行的组件请用 flex 排成一行，按这个相对关系还原版式。' : '按这个相对关系还原版式。';
+  const text = extra
+    ? `按编号一次性插入这些组件，写成完整页面。${layoutNote}${extra}\n${lines.join('\n')}`
+    : `按编号一次性插入这些组件，写成完整页面。${layoutNote}\n${lines.join('\n')}`;
+  sendMessage(text, {
+    places: batch,
+    place: batch[0],
+    layout: lines.join('\n'),
+  });
+}
+
+function commitPlace() {
+  if (!pendingPlaces.length) return;
+  const places = pendingPlaces.slice();
+  chrome.runtime.sendMessage({ type: 'commitPlace', places, place: places[0] }, (result) => {
+    void chrome.runtime.lastError;
+    applyPlaces(result?.places?.length ? result.places : places);
+  });
+}
+
+function startPlace(block, variant) {
+  const component = {
+    id: block.id,
+    name: block.name,
+    category: block.category,
+    kind: block.kind,
+    exportName: block.exportName,
+    extras: block.extras,
+    variant: variant?.id || 'default',
+    variantHint: variant?.hint || '',
+  };
+  closeMenus();
+  setPaletteOpen(false);
+  placing = component;
+  renderPlaceBanner();
+  chrome.runtime.sendMessage({ type: 'startPlace', component }, (result) => {
+    void chrome.runtime.lastError;
+    if (result?.places?.length) {
+      syncPendingPlaces(result.places);
+      return;
+    }
+    if (result?.preview && result.place) {
+      const already = pendingPlaces.some((item) => item.placedAt && item.placedAt === result.place.placedAt);
+      syncPendingPlaces(already ? pendingPlaces : pendingPlaces.concat(result.place));
+      return;
+    }
+    if (placing && placing.id === component.id) {
+      placing = null;
+      renderPlaceBanner();
+      if (pendingPlaces.length) setPaletteOpen(true);
+    }
+    if (result?.error) {
+      current.messages.push({ role: 'assistant', text: `无法放置：${result.error}` });
+      renderMessages();
+    }
+  });
+}
+
+function cancelPlace() {
+  placing = null;
+  pendingPlaces = [];
+  renderPlaceBanner();
+  chrome.runtime.sendMessage({ type: 'cancelPlace' }, () => {
+    void chrome.runtime.lastError;
+  });
+}
+
 function setTitle(title) {
   current.title = title || '新对话';
   chatTitle.textContent = current.title;
@@ -436,7 +1107,7 @@ async function readSseEvents(res, onEvent) {
   }
 }
 
-async function sendMessage(text) {
+async function sendMessage(text, options = {}) {
   if (sending || !text.trim()) return;
   setSending(true);
   const startedAt = Date.now();
@@ -465,6 +1136,9 @@ async function sendMessage(text) {
         page: { url: page.url || '', title: page.title || '' },
         screenshot: page.screenshot || null,
         pick: includePick && lastPick?.selector ? lastPick : null,
+        place: options.place || null,
+        places: options.places || null,
+        layout: options.layout || null,
         stream: true,
       }),
       signal: abort.signal,
@@ -525,6 +1199,7 @@ async function sendMessage(text) {
 function closeMenus() {
   menu.hidden = true;
   moreMenu.hidden = true;
+  setPaletteOpen(false);
 }
 
 function syncMoreMenu() {
@@ -552,6 +1227,7 @@ async function deleteLocalSession(session) {
 menuBtn.addEventListener('click', async (event) => {
   event.stopPropagation();
   moreMenu.hidden = true;
+  setPaletteOpen(false);
   menu.hidden = !menu.hidden;
   if (menu.hidden) return;
   sessionSearch.value = '';
@@ -579,10 +1255,33 @@ document.getElementById('newChatBtn').addEventListener('click', () => {
 
 pickBtn.addEventListener('click', (event) => {
   if (event.target === clearPickBtn) return;
+  if (placing || pendingPlaces.length) cancelPlace();
   chrome.runtime.sendMessage({ type: 'startPick' }, () => {
     void chrome.runtime.lastError;
   });
 });
+
+paletteBtn.addEventListener('click', (event) => {
+  event.stopPropagation();
+  const opening = palette.hidden;
+  menu.hidden = true;
+  moreMenu.hidden = true;
+  setPaletteOpen(opening);
+});
+
+paletteSearch.addEventListener('input', filterPalette);
+paletteSearch.addEventListener('click', (event) => event.stopPropagation());
+paletteSearch.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') event.preventDefault();
+  if (event.key === 'Escape' && paletteSearch.value) {
+    event.stopPropagation();
+    paletteSearch.value = '';
+    filterPalette();
+  }
+});
+
+document.getElementById('cancelPlaceBtn').addEventListener('click', cancelPlace);
+document.getElementById('commitPlaceBtn').addEventListener('click', commitPlace);
 
 clearPickBtn.addEventListener('click', (event) => {
   event.preventDefault();
@@ -601,6 +1300,7 @@ async function refreshBridgeSwitch() {
 moreBtn.addEventListener('click', async (event) => {
   event.stopPropagation();
   menu.hidden = true;
+  setPaletteOpen(false);
   const opening = moreMenu.hidden;
   moreMenu.hidden = !opening;
   if (!opening) return;
@@ -682,6 +1382,11 @@ input.addEventListener('keydown', (event) => {
 
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape' && event.code !== 'Escape') return;
+  if (!palette.hidden) {
+    setPaletteOpen(false);
+    return;
+  }
+  if (placing || pendingPlaces.length) cancelPlace();
   chrome.runtime.sendMessage({ type: 'cancelPick' }, () => {
     void chrome.runtime.lastError;
   });
@@ -694,6 +1399,9 @@ document.addEventListener('click', (event) => {
   if (!moreMenu.hidden && !moreMenu.contains(event.target) && !moreBtn.contains(event.target)) {
     moreMenu.hidden = true;
   }
+  if (!palette.hidden && !palette.contains(event.target) && !paletteBtn.contains(event.target)) {
+    setPaletteOpen(false);
+  }
 });
 
 chrome.runtime.onMessage.addListener((msg) => {
@@ -701,6 +1409,17 @@ chrome.runtime.onMessage.addListener((msg) => {
     lastPick = msg.pick;
     includePick = true;
     renderPickChip();
+  }
+  if (msg.type === 'lastPlace') {
+    lastPlace = msg.place;
+  }
+  if (msg.type === 'placePreview') {
+    syncPendingPlaces(msg.places || (msg.place ? [msg.place] : []), { keepPlacing: true });
+  }
+  if (msg.type === 'placeDismiss') {
+    pendingPlaces = [];
+    placing = null;
+    renderPlaceBanner();
   }
 });
 
@@ -742,6 +1461,10 @@ document.getElementById('copyInstall').addEventListener('click', async () => {
 });
 
 (async function init() {
+  chrome.runtime.sendMessage({ type: 'getPendingPlaces' }, (res) => {
+    void chrome.runtime.lastError;
+    if (res?.places?.length) syncPendingPlaces(res.places, { keepPlacing: true });
+  });
   if (await checkBridge()) {
     setSetupVisible(false);
     await connectApp();

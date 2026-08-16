@@ -84,6 +84,8 @@ Commands:
   eval <expression>
   last-pick
   start-pick
+  last-place
+  start-place
   raw <json>
 
 Examples:
@@ -160,6 +162,15 @@ async function main() {
     case 'start-pick':
     case 'startPick':
       command = 'start-pick';
+      break;
+    case 'last-place':
+    case 'lastPlace':
+      command = 'last-place';
+      break;
+    case 'start-place':
+    case 'startPlace':
+      command = 'start-place';
+      args = rest[0] ? { component: { name: rest.join(' ') } } : {};
       break;
     case 'raw': {
       const payload = JSON.parse(rest.join(' ') || '{}');

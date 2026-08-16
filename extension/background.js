@@ -23,6 +23,8 @@ let actionLog = [];
 let agentTabId = null;
 /** Last element the user pointed at in picker mode */
 let lastPick = null;
+/** Last Forge block the user placed onto the page */
+let lastPlace = null;
 
 function logAction(entry) {
   actionLog.unshift({ ...entry, ts: Date.now() });
@@ -31,11 +33,12 @@ function logAction(entry) {
 }
 
 async function loadConfig() {
-  const data = await chrome.storage.local.get(['port', 'token', 'agentTabId', 'lastPick']);
+  const data = await chrome.storage.local.get(['port', 'token', 'agentTabId', 'lastPick', 'lastPlace']);
   port = data.port || DEFAULT_PORT;
   token = data.token || null;
   agentTabId = data.agentTabId || null;
   lastPick = data.lastPick || null;
+  lastPlace = data.lastPlace || null;
 }
 
 async function saveConfig(partial) {
@@ -57,6 +60,7 @@ function broadcastStatus() {
         hasToken: !!token,
         lastError,
         lastPick,
+        lastPlace,
         log: actionLog.slice(0, 20),
       },
     })
@@ -72,6 +76,49 @@ async function saveLastPick(pick) {
     } catch {}
   }
   chrome.runtime.sendMessage({ type: 'lastPick', pick }).catch(() => {});
+}
+
+async function saveLastPlace(place) {
+  lastPlace = place;
+  await chrome.storage.local.set({ lastPlace: place });
+  const pick = place?.pick || place?.place?.pick || place?.places?.[0]?.pick;
+  if (pick) await saveLastPick(pick);
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    try {
+      ws.send(JSON.stringify({ type: 'place', place }));
+    } catch {}
+  }
+  chrome.runtime.sendMessage({ type: 'lastPlace', place }).catch(() => {});
+}
+
+function pageKey(url) {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return url || '';
+  }
+}
+
+async function savePendingPlaces(tabId, payload) {
+  if (!tabId) return;
+  try {
+    const data = await chrome.storage.session.get('pendingPlacesByTab');
+    const map = data.pendingPlacesByTab || {};
+    if (payload?.places?.length) map[String(tabId)] = payload;
+    else delete map[String(tabId)];
+    await chrome.storage.session.set({ pendingPlacesByTab: map });
+  } catch {}
+}
+
+async function loadPendingPlaces(tabId) {
+  if (!tabId) return null;
+  try {
+    const data = await chrome.storage.session.get('pendingPlacesByTab');
+    return data.pendingPlacesByTab?.[String(tabId)] || null;
+  } catch {
+    return null;
+  }
 }
 
 function isRestrictedUrl(url) {
@@ -106,16 +153,31 @@ async function startPickerOnUserTab() {
   }
   const ok = await ensureContentScript(tab.id, { agentUi: false });
   if (!ok) return { error: 'Cannot inject picker on this page' };
-  try {
-    await chrome.tabs.update(tab.id, { active: true });
-    if (tab.windowId) await chrome.windows.update(tab.windowId, { focused: true });
-  } catch {}
+  // Overlay the visible page in place. Do not activate the tab or focus the
+  // window — that yanks Chrome away from whatever the user is doing.
   try {
     const result = await chrome.tabs.sendMessage(tab.id, { type: 'picker-start' });
     if (result?.pick) await saveLastPick(result.pick);
     return { tabId: tab.id, url: tab.url, ...result };
   } catch (err) {
     return { error: err.message || 'Picker failed' };
+  }
+}
+
+async function startPlaceOnUserTab(component) {
+  const tab = await getUserFacingTab();
+  if (!tab?.id) return { error: 'No active tab' };
+  if (isRestrictedUrl(tab.url)) {
+    return { error: 'Cannot place on this page (chrome:// or similar)' };
+  }
+  const ok = await ensureContentScript(tab.id, { agentUi: false });
+  if (!ok) return { error: 'Cannot inject placer on this page' };
+  try {
+    const result = await chrome.tabs.sendMessage(tab.id, { type: 'place-start', component });
+    if (result?.place && !result.preview) await saveLastPlace(result.place);
+    return { tabId: tab.id, url: tab.url, ...result };
+  } catch (err) {
+    return { error: err.message || 'Place failed' };
   }
 }
 
@@ -231,6 +293,37 @@ async function tabExists(tabId) {
   }
 }
 
+async function disableAgentUi(tabId) {
+  if (!tabId) return;
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: 'agent-ui-enable', enabled: false, trusted: true });
+  } catch {}
+}
+
+async function setAgentTabId(nextId) {
+  const prev = agentTabId;
+  if (prev === nextId) {
+    if (nextId) await enableAgentUi(nextId);
+    return nextId;
+  }
+  agentTabId = nextId || null;
+  await saveConfig({ agentTabId });
+  if (prev) await disableAgentUi(prev);
+  if (nextId) await enableAgentUi(nextId);
+  return nextId;
+}
+
+/**
+ * True when this tab is the one the user is looking at, and it is not already
+ * the dedicated agent workspace. Driving that tab would steal their keyboard.
+ */
+async function isUserBrowsingTab(tabId) {
+  if (!tabId) return false;
+  if (tabId === agentTabId) return false;
+  const user = await getUserFacingTab();
+  return user?.id === tabId;
+}
+
 /**
  * Resolve the dedicated silent agent tab.
  * Never focuses the user's current tab. Creates a background tab if needed.
@@ -240,15 +333,17 @@ async function ensureAgentTab(preferUrl) {
     return agentTabId;
   }
 
-  // Reuse a previously marked agent tab if storage was lost
+  const user = await getUserFacingTab();
+
+  // Reuse a previously marked agent tab if storage was lost — but never the
+  // tab the user is currently browsing.
   const all = await chrome.tabs.query({});
   const found = all.find(
-    (t) => t.title && t.title.includes(AGENT_TAB_TITLE_MARK)
+    (t) => t.id !== user?.id && t.title && t.title.includes(AGENT_TAB_TITLE_MARK)
   );
   if (found?.id) {
-    agentTabId = found.id;
-    await saveConfig({ agentTabId });
-    return agentTabId;
+    await setAgentTabId(found.id);
+    return found.id;
   }
 
   // New silent background tab — never steals the user's current tab
@@ -256,18 +351,42 @@ async function ensureAgentTab(preferUrl) {
     url: preferUrl || 'about:blank',
     active: false,
   });
-  agentTabId = tab.id;
-  await saveConfig({ agentTabId });
-  // title mark after load
+  await setAgentTabId(tab.id);
   waitTabComplete(tab.id).then(() => markAgentTabTitle(tab.id));
-  return agentTabId;
+  return tab.id;
+}
+
+/**
+ * Pin a tab as the agent workspace. If that tab is the one the user is
+ * browsing, clone it into a silent background tab instead of hijacking it.
+ */
+async function adoptAgentTab(tabId, preferUrl) {
+  if (tabId && (await isUserBrowsingTab(tabId))) {
+    let url = preferUrl;
+    if (!url) {
+      try {
+        const tab = await chrome.tabs.get(tabId);
+        if (tab.url && !isRestrictedUrl(tab.url)) url = tab.url;
+      } catch {}
+    }
+    const created = await chrome.tabs.create({
+      url: url || 'about:blank',
+      active: false,
+    });
+    await setAgentTabId(created.id);
+    if (url) await waitTabComplete(created.id);
+    waitTabComplete(created.id).then(() => markAgentTabTitle(created.id));
+    return created.id;
+  }
+  if (tabId && (await tabExists(tabId))) {
+    await setAgentTabId(tabId);
+    return tabId;
+  }
+  return ensureAgentTab(preferUrl);
 }
 
 /** Resolve work tab: explicit tabId > agent tab. Never defaults to user active tab. */
 async function resolveWorkTabId(args = {}) {
-  if (args.tabId) {
-    if (await tabExists(args.tabId)) return args.tabId;
-  }
   // useActive: true only if caller explicitly wants current tab (rare).
   // Do NOT reassign agentTabId here — operating the active tab once must not
   // permanently mark the user's browsing tab as the silent agent tab.
@@ -275,27 +394,43 @@ async function resolveWorkTabId(args = {}) {
     const active = await getActiveTab();
     if (active?.id) return active.id;
   }
+  if (args.tabId && (await tabExists(args.tabId))) {
+    // A stale tabId must not pull automation onto the page the user is using.
+    if (!(await isUserBrowsingTab(args.tabId))) return args.tabId;
+  }
   return ensureAgentTab(args.url);
 }
 
 async function enableAgentUi(tabId) {
-  // Turn on the visible cursor only for the work/agent tab receiving automation.
-  // Never broadcast enable to the user's other tabs.
-  if (!tabId) return;
+  // Visible cursor + favicon overlay belong only on the dedicated agent tab.
+  // Enabling them on the user's browsing tab steals the pointer and favicon.
+  if (!tabId || tabId !== agentTabId) return;
   try {
-    await chrome.tabs.sendMessage(tabId, { type: 'agent-ui-enable', enabled: true });
+    await chrome.tabs.sendMessage(tabId, { type: 'agent-ui-enable', enabled: true, trusted: true });
   } catch {}
 }
 
+const CONTENT_SCRIPTS = ['agent-ui.js', 'vendor/forge-palette.js', 'content.js'];
+
 async function ensureContentScript(tabId, opts = {}) {
-  const agentUi = opts.agentUi !== false;
+  const agentUi = opts.agentUi !== false && tabId === agentTabId;
   // Prefer ping-first so we do NOT re-inject content.js on every command.
   // Re-injection stacks message listeners and races cursor movement on SPA sites
   // like x.com.
   try {
-    await chrome.tabs.sendMessage(tabId, { type: 'ping' });
-    if (agentUi) await enableAgentUi(tabId);
-    return true;
+    const ping = await chrome.tabs.sendMessage(tabId, { type: 'ping' });
+    if (ping?.ok && !ping.palette) {
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId },
+          files: ['vendor/forge-palette.js'],
+        });
+      } catch {}
+    }
+    if (ping?.ok) {
+      if (agentUi) await enableAgentUi(tabId);
+      return true;
+    }
   } catch {
     // not injected yet (or context invalidated after navigation)
   }
@@ -309,7 +444,7 @@ async function ensureContentScript(tabId, opts = {}) {
   try {
     await chrome.scripting.executeScript({
       target: { tabId },
-      files: ['agent-ui.js', 'content.js'],
+      files: CONTENT_SCRIPTS,
     });
   } catch {
     // page may block scripting
@@ -333,10 +468,10 @@ async function markAgentTabTitle(tabId) {
 }
 
 async function sendToTab(tabId, message) {
-  const ok = await ensureContentScript(tabId);
+  const ok = await ensureContentScript(tabId, { agentUi: tabId === agentTabId });
   if (!ok) return { error: 'Cannot inject content script on this page (chrome:// or blocked)' };
-  // Guarantee cursor UI is on before any DOM command.
-  await enableAgentUi(tabId);
+  // Cursor overlay only on the dedicated agent tab — never the user's page.
+  if (tabId === agentTabId) await enableAgentUi(tabId);
   try {
     return await chrome.tabs.sendMessage(tabId, message);
   } catch (err) {
@@ -350,7 +485,7 @@ async function sendToTab(tabId, message) {
     try {
       await chrome.scripting.executeScript({
         target: { tabId },
-        files: ['agent-ui.js', 'content.js'],
+        files: CONTENT_SCRIPTS,
       });
     } catch {}
     try {
@@ -379,6 +514,7 @@ async function handleCommand(command, args) {
           port,
           silent: true,
           lastPick,
+          lastPlace,
           agentTabId: agentTabId || null,
           agentTab: agent
             ? { id: agent.id, url: agent.url, title: agent.title, active: agent.active }
@@ -423,8 +559,20 @@ async function handleCommand(command, args) {
         // useActive means "operate user's current tab this once" — do not permanently
         // hijack that tab as the silent agent workspace.
         if (!args.useActive) {
-          agentTabId = tab.id;
-          await saveConfig({ agentTabId: tab.id });
+          const adopted = await adoptAgentTab(tab.id, url);
+          if (adopted !== tab.id) {
+            await chrome.tabs.update(adopted, { url });
+            await waitTabComplete(adopted);
+            await markAgentTabTitle(adopted);
+            await ensureContentScript(adopted);
+            return {
+              tabId: adopted,
+              url,
+              silent: !foreground,
+              agent: true,
+              useActive: false,
+            };
+          }
           await waitTabComplete(tab.id);
           await markAgentTabTitle(tab.id);
         } else {
@@ -447,8 +595,7 @@ async function handleCommand(command, args) {
           url: args.url || 'about:blank',
           active: foreground, // default false = silent
         });
-        agentTabId = tab.id;
-        await saveConfig({ agentTabId: tab.id });
+        await setAgentTabId(tab.id);
         if (args.url) await waitTabComplete(tab.id);
         await markAgentTabTitle(tab.id);
         await ensureContentScript(tab.id);
@@ -463,10 +610,15 @@ async function handleCommand(command, args) {
       case 'activate': {
         // By default: pin agentTabId only, do NOT steal UI focus.
         // Pass focus:true / foreground:true to actually bring tab to front.
-        const tabId = args.tabId || (await ensureAgentTab());
-        agentTabId = tabId;
-        await saveConfig({ agentTabId: tabId });
         const wantFocus = !!args.focus || !!args.foreground;
+        const requested = args.tabId || (await ensureAgentTab());
+        let tabId;
+        if (wantFocus || args.adopt) {
+          await setAgentTabId(requested);
+          tabId = requested;
+        } else {
+          tabId = await adoptAgentTab(requested);
+        }
         if (wantFocus) {
           const tab = await chrome.tabs.update(tabId, { active: true });
           if (tab.windowId) {
@@ -539,11 +691,14 @@ async function handleCommand(command, args) {
             func: async (sel, value) => {
               const el = document.querySelector(sel);
               if (!el) return { error: `Element not found: ${sel}` };
-              // Field was already focused/clicked by content-script humanClick.
-              try {
-                el.focus({ preventScroll: true });
-              } catch {
-                el.focus();
+              // Field was already clicked by content-script humanClick.
+              // Skip focus() on a background tab — it steals Chrome/OS focus.
+              if (!document.hidden && document.visibilityState !== 'hidden') {
+                try {
+                  el.focus({ preventScroll: true });
+                } catch {
+                  try { el.focus(); } catch {}
+                }
               }
               await new Promise((r) => setTimeout(r, 40));
               try {
@@ -621,19 +776,41 @@ async function handleCommand(command, args) {
         return startPickerOnUserTab();
       }
 
+      case 'start-place':
+      case 'startPlace': {
+        return startPlaceOnUserTab(args.component || args);
+      }
+
       case 'cancel-pick':
-      case 'cancelPick': {
+      case 'cancelPick':
+      case 'cancel-place':
+      case 'cancelPlace': {
         const tab = await getUserFacingTab();
         if (!tab?.id) return { cancelled: true };
         try {
-          await chrome.tabs.sendMessage(tab.id, { type: 'picker-cancel' });
+          await chrome.tabs.sendMessage(tab.id, { type: 'place-cancel' });
         } catch {}
+        await savePendingPlaces(tab.id, null);
         return { cancelled: true };
       }
 
       case 'last-pick':
       case 'lastPick': {
         return { pick: lastPick };
+      }
+
+      case 'last-place':
+      case 'lastPlace': {
+        const places = Array.isArray(lastPlace?.places)
+          ? lastPlace.places
+          : lastPlace?.component
+            ? [lastPlace]
+            : [];
+        return {
+          place: lastPlace?.place || lastPlace,
+          places,
+          layout: lastPlace?.layout || null,
+        };
       }
 
       // focus element inside page (not browser tab focus)
@@ -713,6 +890,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       hasToken: !!token,
       lastError,
       lastPick,
+      lastPlace,
       agentTabId,
       silent: true,
       log: actionLog.slice(0, 20),
@@ -730,7 +908,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
-  if (msg.type === 'cancelPick') {
+  if (msg.type === 'startPlace') {
+    startPlaceOnUserTab(msg.component).then(sendResponse);
+    return true;
+  }
+
+  if (msg.type === 'cancelPick' || msg.type === 'cancelPlace') {
     handleCommand('cancel-pick', {}).then(sendResponse);
     return true;
   }
@@ -740,8 +923,89 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  if (msg.type === 'getLastPlace') {
+    sendResponse({ place: lastPlace });
+    return true;
+  }
+
   if (msg.type === 'picker-result' && msg.pick) {
     saveLastPick(msg.pick).then(() => sendResponse({ ok: true }));
+    return true;
+  }
+
+  if (msg.type === 'place-preview' && (msg.place || msg.places?.length)) {
+    const tabId = sender.tab?.id;
+    const place = msg.place ? { ...msg.place, tabId } : null;
+    const places = Array.isArray(msg.places)
+      ? msg.places.map((item) => ({ ...item, tabId }))
+      : place
+        ? [place]
+        : [];
+    savePendingPlaces(tabId, {
+      url: sender.tab?.url || places[0]?.url || '',
+      places,
+      layout: msg.layout || null,
+    }).catch(() => {});
+    chrome.runtime.sendMessage({
+      type: 'placePreview',
+      place: places[places.length - 1] || place,
+      places,
+      layout: msg.layout || null,
+    }).catch(() => {});
+    sendResponse({ ok: true, place, places });
+    return true;
+  }
+
+  if (msg.type === 'place-dismiss') {
+    savePendingPlaces(sender.tab?.id, null).catch(() => {});
+    chrome.runtime.sendMessage({ type: 'placeDismiss' }).catch(() => {});
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  if (msg.type === 'place-restore-request') {
+    loadPendingPlaces(sender.tab?.id).then((saved) => {
+      const same = saved?.url && pageKey(saved.url) === pageKey(msg.url || sender.tab?.url || '');
+      sendResponse({ places: same ? saved.places : [] });
+    }).catch(() => sendResponse({ places: [] }));
+    return true;
+  }
+
+  if (msg.type === 'getPendingPlaces') {
+    (async () => {
+      const tab = await getUserFacingTab();
+      const saved = tab?.id ? await loadPendingPlaces(tab.id) : null;
+      sendResponse({ places: saved?.places || [], layout: saved?.layout || null });
+    })();
+    return true;
+  }
+
+  if (msg.type === 'place-result' && msg.place) {
+    saveLastPlace(msg.place).then(() => sendResponse({ ok: true }));
+    return true;
+  }
+
+  if (msg.type === 'commitPlace' && (msg.places?.length || msg.place)) {
+    (async () => {
+      let places = Array.isArray(msg.places) && msg.places.length ? msg.places : [msg.place];
+      let layout = msg.layout || null;
+      const tabId = places[0]?.tabId || msg.place?.tabId || (await getUserFacingTab())?.id;
+      if (tabId) {
+        try {
+          const snap = await chrome.tabs.sendMessage(tabId, { type: 'place-commit' });
+          if (snap?.places?.length) places = snap.places;
+          if (snap?.layout) layout = snap.layout;
+        } catch {}
+        await savePendingPlaces(tabId, null);
+      }
+      await saveLastPlace({
+        places,
+        place: places[0],
+        layout,
+        placedAt: new Date().toISOString(),
+      });
+      sendResponse({ ok: true, places, layout });
+    })();
     return true;
   }
 
@@ -776,6 +1040,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 if (chrome.sidePanel?.setPanelBehavior) {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 }
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  savePendingPlaces(tabId, null).catch(() => {});
+  if (tabId === agentTabId) {
+    agentTabId = null;
+    saveConfig({ agentTabId: null }).catch(() => {});
+  }
+});
 
 // Keep service worker from dying forever without reconnect attempts
 chrome.alarms.create('bridge-keepalive', { periodInMinutes: 0.5 });

@@ -128,6 +128,68 @@
   white-space: nowrap;
 }
 
+#gcb-place-line {
+  position: fixed;
+  display: none;
+  height: 2px;
+  background: #000a19;
+  pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.7);
+}
+
+#gcb-place-line::before,
+#gcb-place-line::after {
+  content: '';
+  position: absolute;
+  top: -3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #000a19;
+}
+
+#gcb-place-line::before { left: -1px; }
+#gcb-place-line::after { right: -1px; }
+
+#gcb-place-line.is-vertical::before,
+#gcb-place-line.is-vertical::after {
+  left: -3px;
+  right: auto;
+}
+
+#gcb-place-line.is-vertical::before { top: -1px; }
+#gcb-place-line.is-vertical::after {
+  top: auto;
+  bottom: -1px;
+}
+
+#gcb-place-line.is-inside {
+  background: rgba(0, 10, 25, 0.12);
+  box-shadow: inset 0 0 0 2px #000a19, 0 0 0 1px rgba(255, 255, 255, 0.7);
+  border-radius: 4px;
+}
+
+#gcb-place-line.is-inside::before,
+#gcb-place-line.is-inside::after {
+  display: none;
+}
+
+#gcb-place-ghost,
+.gcb-place-ghost {
+  position: fixed;
+  z-index: 2147483645;
+  pointer-events: none;
+  box-sizing: border-box;
+}
+
+#gcb-place-dim {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483644;
+  background: rgba(0, 10, 25, 0.28);
+  pointer-events: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
   #gcb-agent-cursor { transition-duration: 1ms; }
   #gcb-agent-cursor.gcb-agent-cursor-click .gcb-agent-cursor-ring { animation-duration: 1ms; }
