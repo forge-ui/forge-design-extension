@@ -139,15 +139,25 @@ function sendToExtension(message) {
   return true;
 }
 
+function flushHttp(res) {
+  if (typeof res.flush === 'function') {
+    try {
+      res.flush();
+    } catch {}
+  }
+}
+
 function writeSse(res, event) {
   if (res.writableEnded) return;
   res.write(`data: ${JSON.stringify(event)}\n\n`);
+  flushHttp(res);
 }
 
-/** Coalesce token SSE writes to ~1 per animation frame budget (reduces sidepanel jank). */
-function createSseTextBatcher(res, { intervalMs = 32 } = {}) {
+/** Coalesce token SSE writes; first token flushes immediately for snappy TTFT. */
+function createSseTextBatcher(res, { intervalMs = 16 } = {}) {
   let pending = '';
   let timer = null;
+  let sentOnce = false;
   const flush = () => {
     timer = null;
     if (!pending || res.writableEnded) {
@@ -156,12 +166,21 @@ function createSseTextBatcher(res, { intervalMs = 32 } = {}) {
     }
     const data = pending;
     pending = '';
+    sentOnce = true;
     writeSse(res, { type: 'text', data });
   };
   return {
     pushText(data) {
       if (!data) return;
       pending += data;
+      if (!sentOnce) {
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        flush();
+        return;
+      }
       if (!timer) timer = setTimeout(flush, intervalMs);
     },
     flush() {
@@ -228,8 +247,15 @@ async function handleGrokTurn(req, res, { session } = {}) {
     'Content-Type': 'text/event-stream; charset=utf-8',
     'Cache-Control': 'no-cache, no-transform',
     Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
   });
+  if (typeof res.flushHeaders === 'function') {
+    try {
+      res.flushHeaders();
+    } catch {}
+  }
   res.write('\n');
+  flushHttp(res);
 
   const textBatcher = createSseTextBatcher(res);
   const { child, done } = startGrokStream({

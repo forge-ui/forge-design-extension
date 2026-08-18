@@ -217,15 +217,19 @@ async function getUserFacingTab() {
   return getActiveTab();
 }
 
-async function getPageContext() {
+async function getPageContext(opts = {}) {
+  const wantShot = opts.screenshot === true;
   const tab = await getUserFacingTab();
   if (!tab) return { url: '', title: '', screenshot: null };
   const page = { url: tab.url || '', title: tab.title || '', screenshot: null };
   if (isRestrictedUrl(tab.url) || tab.windowId == null) return page;
+  // Screenshots are expensive (capture + huge base64 + Grok vision read).
+  // Only take one when the caller explicitly asks.
+  if (!wantShot) return page;
   try {
     page.screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, {
       format: 'jpeg',
-      quality: 55,
+      quality: 48,
     });
   } catch {}
   return page;
@@ -1013,7 +1017,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === 'pageContext') {
-    getPageContext().then(sendResponse);
+    getPageContext({ screenshot: msg.screenshot === true }).then(sendResponse);
     return true;
   }
 

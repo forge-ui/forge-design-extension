@@ -357,6 +357,7 @@ export function startGrokStream({ prompt, sessionId, cwd, timeoutMs = 600000, on
   const child = spawn(resolveGrokBin(), grokArgs({ prompt, sessionId, cwd, stream: true }), {
     cwd: cwd || os.homedir(),
     env: process.env,
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
   let buffer = '';
   let stderr = '';
@@ -448,8 +449,8 @@ export function buildGrokPrompt({ text, page, screenshotPath, pick, place, place
     if (page.title) parts.push(`title: ${page.title}`);
   }
   if (screenshotPath) {
-    parts.push(`viewport screenshot: ${screenshotPath}`);
-    parts.push('请先用 read_file 打开这张截图，再根据页面实际情况回答。');
+    parts.push(`viewport screenshot (optional): ${screenshotPath}`);
+    parts.push('需要看画面时再用 read_file 打开截图；纯文案/代码问题直接答，不要为了看图先卡住。');
   }
   const batch = Array.isArray(places) && places.length
     ? places

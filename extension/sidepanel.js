@@ -1093,12 +1093,15 @@ function newChat() {
   input.focus();
 }
 
-function getPageContext() {
+function getPageContext(opts = {}) {
   return new Promise((resolve) => {
-    chrome.runtime.sendMessage({ type: 'pageContext' }, (page) => {
-      void chrome.runtime.lastError;
-      resolve(page || {});
-    });
+    chrome.runtime.sendMessage(
+      { type: 'pageContext', screenshot: opts.screenshot === true },
+      (page) => {
+        void chrome.runtime.lastError;
+        resolve(page || {});
+      }
+    );
   });
 }
 
@@ -1152,7 +1155,14 @@ async function sendMessage(text, options = {}) {
   input.value = '';
   resizeInput();
   try {
-    const page = await getPageContext();
+    // Screenshot only when editing a pick/place — every-message shots force Grok
+    // through vision and make the first token feel stuck.
+    const needShot = !!(
+      options.place ||
+      options.places?.length ||
+      (includePick && lastPick?.selector)
+    );
+    const page = await getPageContext({ screenshot: needShot });
     const pathname = current.id ? `/sessions/${current.id}/messages` : '/sessions';
     const res = await fetch(apiUrl(pathname), {
       method: 'POST',
@@ -1165,7 +1175,7 @@ async function sendMessage(text, options = {}) {
         text,
         cwd: current.cwd || currentCwd,
         page: { url: page.url || '', title: page.title || '' },
-        screenshot: page.screenshot || null,
+        screenshot: needShot ? page.screenshot || null : null,
         pick: includePick && lastPick?.selector ? lastPick : null,
         place: options.place || null,
         places: options.places || null,

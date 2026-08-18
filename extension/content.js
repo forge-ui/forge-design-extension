@@ -1835,7 +1835,7 @@ async function handleDomCommand(command, args) {
   }
 }
 
-window.__gcbContentVersion = '0.3.25';
+window.__gcbContentVersion = '0.3.26';
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'ping') {
