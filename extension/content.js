@@ -1544,14 +1544,36 @@ function mouseEventInit(x, y, extra = {}) {
 /**
  * Full pointer/mouse sequence at element center (after cursor has arrived).
  * Mirrors a real user: hover → move → down → up → click.
+ * On a background agent tab, if nothing (e.g. SPA router) prevented the
+ * default, block browser link navigation that can surface this tab and
+ * navigate with location.assign instead (stays background).
  */
 function dispatchPointerClick(el, x, y) {
   const target = el;
   const common = { pointerId: 1, pointerType: 'mouse', isPrimary: true };
+  const background = pageIsBackground();
+  const anchor = target.closest?.('a[href]') || null;
 
   // Mark bridge-driven clicks so agent-ui can skip its reactive move/click
   // feedback (cursor already arrived before this sequence runs).
   window.__gcbBridgeClicking = true;
+  // Bubble on document runs after React root handlers — see if they preventDefault.
+  let silentAnchorBlocker = null;
+  if (background && anchor) {
+    silentAnchorBlocker = (event) => {
+      if (event.defaultPrevented) return;
+      if (!anchor.contains(event.target) && event.target !== anchor) return;
+      const href = anchor.getAttribute('href') || '';
+      if (!href || href.startsWith('#') || href.startsWith('javascript:')) return;
+      if (anchor.target && anchor.target !== '_self') return;
+      event.preventDefault();
+      try {
+        const next = anchor.href;
+        if (next && next !== location.href) location.assign(next);
+      } catch {}
+    };
+    document.addEventListener('click', silentAnchorBlocker, false);
+  }
   try {
     target.dispatchEvent(
       new PointerEvent('pointerover', mouseEventInit(x, y, { ...common, buttons: 0 }))
@@ -1578,6 +1600,9 @@ function dispatchPointerClick(el, x, y) {
     target.dispatchEvent(new MouseEvent('mouseup', mouseEventInit(x, y, { buttons: 0, detail: 1 })));
     target.dispatchEvent(new MouseEvent('click', mouseEventInit(x, y, { buttons: 0, detail: 1 })));
   } finally {
+    if (silentAnchorBlocker) {
+      document.removeEventListener('click', silentAnchorBlocker, false);
+    }
     // Defer clear so capture-phase listeners still see the flag.
     setTimeout(() => {
       window.__gcbBridgeClicking = false;
@@ -1810,7 +1835,7 @@ async function handleDomCommand(command, args) {
   }
 }
 
-window.__gcbContentVersion = '0.3.24';
+window.__gcbContentVersion = '0.3.25';
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'ping') {

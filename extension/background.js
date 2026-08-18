@@ -66,6 +66,52 @@ async function releaseAgentUiNow() {
   if (agentTabId) await disableAgentUi(agentTabId);
 }
 
+/**
+ * Snapshot of the tab the user is looking at. Automation must not leave the
+ * agent tab (or window) in front when the command finishes.
+ */
+async function captureUserFocus() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (!tab?.id) return null;
+    return {
+      tabId: tab.id,
+      windowId: tab.windowId,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * If the agent tab stole the active slot in the user's window, put their tab back.
+ * Does not call windows.update({ focused: true }) — never yank the OS window.
+ * If the user switched to some other non-agent tab mid-run, leave them alone.
+ */
+async function restoreUserFocus(snapshot) {
+  if (!snapshot?.tabId) return;
+  try {
+    if (!(await tabExists(snapshot.tabId))) return;
+    const windowId = snapshot.windowId;
+    const [active] = await chrome.tabs.query({
+      active: true,
+      ...(windowId != null ? { windowId } : {}),
+    });
+    if (!active?.id) return;
+    if (active.id === snapshot.tabId) return;
+    // User switched to some other non-agent tab mid-run — leave them alone.
+    if (agentTabId && active.id !== agentTabId) return;
+    // Agent tab stole the active slot — put the user back. Never focus the window.
+    if (agentTabId && active.id === agentTabId) {
+      await chrome.tabs.update(snapshot.tabId, { active: true });
+    }
+  } catch {}
+}
+
+function wantsForeground(args = {}) {
+  return !!(args.foreground || args.focus || args.useActive);
+}
+
 function logAction(entry) {
   actionLog.unshift({ ...entry, ts: Date.now() });
   if (actionLog.length > 50) actionLog.length = 50;
@@ -559,6 +605,10 @@ async function handleCommand(command, args) {
 
   const keepAlive = !READONLY_COMMANDS.has(command);
   if (keepAlive) noteAgentActivity();
+  // Read-only status/tabs should also not leave focus disturbed if a prior
+  // command raced; only mutating work needs a full silent guard.
+  const guardFocus = keepAlive && !wantsForeground(args);
+  const focusSnapshot = guardFocus ? await captureUserFocus() : null;
   try {
     switch (command) {
       case 'status': {
@@ -890,6 +940,7 @@ async function handleCommand(command, args) {
   } catch (err) {
     return { error: err.message || String(err) };
   } finally {
+    if (guardFocus) await restoreUserFocus(focusSnapshot);
     // Drop cursor + MutationObservers once the tool burst is over.
     if (keepAlive) scheduleAgentUiRelease();
   }
