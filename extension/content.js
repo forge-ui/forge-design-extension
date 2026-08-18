@@ -122,6 +122,40 @@ function shortText(el, max = 160) {
     .slice(0, max);
 }
 
+function compactHtml(el, max = 480) {
+  if (!el || el.nodeType !== 1) return '';
+  try {
+    let html = el.outerHTML || '';
+    html = html.replace(/\s+/g, ' ').trim();
+    if (html.length > max) html = `${html.slice(0, max)}…`;
+    return html;
+  } catch {
+    return '';
+  }
+}
+
+function pickStyles(el) {
+  try {
+    const cs = getComputedStyle(el);
+    return {
+      display: cs.display || '',
+      position: cs.position || '',
+      color: cs.color || '',
+      backgroundColor: cs.backgroundColor || '',
+      fontSize: cs.fontSize || '',
+      fontWeight: cs.fontWeight || '',
+      lineHeight: cs.lineHeight || '',
+      borderRadius: cs.borderRadius || '',
+      padding: cs.padding || '',
+      margin: cs.margin || '',
+      width: cs.width || '',
+      height: cs.height || '',
+    };
+  } catch {
+    return null;
+  }
+}
+
 function describeElement(el) {
   if (!el || el.nodeType !== 1) return null;
   const rect = el.getBoundingClientRect();
@@ -139,15 +173,27 @@ function describeElement(el) {
 
   const ancestors = [];
   let current = el.parentElement;
-  while (current && current !== document.documentElement && ancestors.length < 4) {
+  while (current && current !== document.documentElement && ancestors.length < 5) {
     ancestors.push({
       tag: current.tagName.toLowerCase(),
       id: current.id || null,
       testid: current.getAttribute('data-testid') || null,
+      role: current.getAttribute('role') || null,
       text: shortText(current, 60) || null,
     });
     current = current.parentElement;
   }
+
+  const sibling = el.parentElement
+    ? [...el.parentElement.children]
+        .filter((node) => node !== el && node.nodeType === 1)
+        .slice(0, 4)
+        .map((node) => ({
+          tag: node.tagName.toLowerCase(),
+          text: shortText(node, 40) || null,
+          testid: node.getAttribute('data-testid') || null,
+        }))
+    : [];
 
   return {
     pickedAt: new Date().toISOString(),
@@ -168,6 +214,14 @@ function describeElement(el) {
     text: shortText(el),
     attrs,
     ancestors,
+    siblings: sibling,
+    html: compactHtml(el),
+    styles: pickStyles(el),
+    dpr: window.devicePixelRatio || 1,
+    viewport: {
+      w: window.innerWidth || 0,
+      h: window.innerHeight || 0,
+    },
     rect: {
       x: Math.round(rect.x),
       y: Math.round(rect.y),
@@ -1835,7 +1889,7 @@ async function handleDomCommand(command, args) {
   }
 }
 
-window.__gcbContentVersion = '0.3.26';
+window.__gcbContentVersion = '0.3.27';
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'ping') {
@@ -1860,6 +1914,20 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     startPicker()
       .then((result) => sendResponse(result))
       .catch((err) => sendResponse({ error: err.message || String(err) }));
+    return true;
+  }
+
+  if (msg.type === 'describe-selector') {
+    try {
+      const el = queryOne(msg.selector);
+      if (!el) {
+        sendResponse({ error: `Element not found: ${msg.selector}` });
+        return true;
+      }
+      sendResponse({ pick: describeElement(el) });
+    } catch (err) {
+      sendResponse({ error: err.message || String(err) });
+    }
     return true;
   }
 

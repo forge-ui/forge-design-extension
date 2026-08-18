@@ -1105,6 +1105,23 @@ function getPageContext(opts = {}) {
   });
 }
 
+/** DOM-first pick context + optional element crop (never full-page). */
+function getElementCrop(pick, opts = {}) {
+  return new Promise((resolve) => {
+    if (!pick?.selector) {
+      resolve({ pick: null, screenshot: null });
+      return;
+    }
+    chrome.runtime.sendMessage(
+      { type: 'elementCrop', pick, enrich: opts.enrich !== false, opts },
+      (res) => {
+        void chrome.runtime.lastError;
+        resolve(res || { pick, screenshot: null });
+      }
+    );
+  });
+}
+
 function setSending(next) {
   sending = next;
   if (sending) {
@@ -1155,14 +1172,25 @@ async function sendMessage(text, options = {}) {
   input.value = '';
   resizeInput();
   try {
-    // Screenshot only when editing a pick/place — every-message shots force Grok
-    // through vision and make the first token feel stuck.
-    const needShot = !!(
-      options.place ||
-      options.places?.length ||
-      (includePick && lastPick?.selector)
-    );
-    const page = await getPageContext({ screenshot: needShot });
+    // DOM-first: never full-page shot. Pick/place may attach a small element crop.
+    const page = await getPageContext({ screenshot: false });
+    let pick = includePick && lastPick?.selector ? lastPick : null;
+    let screenshot = null;
+    const placePick =
+      options.places?.[0]?.pick ||
+      options.place?.pick ||
+      options.place?.places?.[0]?.pick ||
+      null;
+    const cropSource = pick || (options.place || options.places?.length ? placePick : null);
+    if (cropSource?.selector) {
+      const cropped = await getElementCrop(cropSource);
+      if (cropped.pick && pick) {
+        pick = cropped.pick;
+        lastPick = pick;
+        renderPickChip();
+      }
+      screenshot = cropped.screenshot || null;
+    }
     const pathname = current.id ? `/sessions/${current.id}/messages` : '/sessions';
     const res = await fetch(apiUrl(pathname), {
       method: 'POST',
@@ -1175,8 +1203,8 @@ async function sendMessage(text, options = {}) {
         text,
         cwd: current.cwd || currentCwd,
         page: { url: page.url || '', title: page.title || '' },
-        screenshot: needShot ? page.screenshot || null : null,
-        pick: includePick && lastPick?.selector ? lastPick : null,
+        screenshot,
+        pick,
         place: options.place || null,
         places: options.places || null,
         layout: options.layout || null,

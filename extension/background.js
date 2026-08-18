@@ -223,8 +223,7 @@ async function getPageContext(opts = {}) {
   if (!tab) return { url: '', title: '', screenshot: null };
   const page = { url: tab.url || '', title: tab.title || '', screenshot: null };
   if (isRestrictedUrl(tab.url) || tab.windowId == null) return page;
-  // Screenshots are expensive (capture + huge base64 + Grok vision read).
-  // Only take one when the caller explicitly asks.
+  // Full-page shots are expensive. Prefer element crops via captureElementCrop.
   if (!wantShot) return page;
   try {
     page.screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, {
@@ -233,6 +232,103 @@ async function getPageContext(opts = {}) {
     });
   } catch {}
   return page;
+}
+
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error || new Error('FileReader failed'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+/**
+ * Crop the visible tab around a CSS-pixel rect (element pick).
+ * Falls back to null if the pick page is not the visible tab.
+ */
+async function captureElementCrop(pick, opts = {}) {
+  const rect = pick?.rect;
+  if (!rect || !(rect.w > 0 && rect.h > 0)) return null;
+
+  const tab = await getUserFacingTab();
+  if (!tab?.windowId || isRestrictedUrl(tab.url)) return null;
+  // Only crop when the user is still looking at the same page as the pick.
+  if (pick.url) {
+    try {
+      const a = new URL(pick.url);
+      const b = new URL(tab.url || '');
+      if (a.origin !== b.origin || a.pathname !== b.pathname) return null;
+    } catch {}
+  }
+
+  let full;
+  try {
+    full = await chrome.tabs.captureVisibleTab(tab.windowId, {
+      format: 'jpeg',
+      quality: 72,
+    });
+  } catch {
+    return null;
+  }
+  if (!full) return null;
+
+  const dpr = Number(pick.dpr) > 0 ? Number(pick.dpr) : 1;
+  const padding = opts.padding != null ? opts.padding : 40;
+  const maxSide = opts.maxSide != null ? opts.maxSide : 720;
+
+  try {
+    const res = await fetch(full);
+    const blob = await res.blob();
+    const bitmap = await createImageBitmap(blob);
+    const pad = padding * dpr;
+    const sx = Math.max(0, Math.floor(rect.x * dpr - pad));
+    const sy = Math.max(0, Math.floor(rect.y * dpr - pad));
+    const sw = Math.max(1, Math.min(bitmap.width - sx, Math.ceil(rect.w * dpr + pad * 2)));
+    const sh = Math.max(1, Math.min(bitmap.height - sy, Math.ceil(rect.h * dpr + pad * 2)));
+
+    let outW = sw;
+    let outH = sh;
+    const limit = maxSide * dpr;
+    if (outW > limit || outH > limit) {
+      const scale = limit / Math.max(outW, outH);
+      outW = Math.max(1, Math.round(outW * scale));
+      outH = Math.max(1, Math.round(outH * scale));
+    }
+
+    const canvas = new OffscreenCanvas(outW, outH);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, outW, outH);
+    bitmap.close?.();
+    const outBlob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.78 });
+    return await blobToDataUrl(outBlob);
+  } catch {
+    return null;
+  }
+}
+
+/** Refresh pick DOM metadata from the live page (html/styles may be stale). */
+async function enrichPick(pick) {
+  if (!pick?.selector) return pick;
+  const tab = await getUserFacingTab();
+  if (!tab?.id || isRestrictedUrl(tab.url)) return pick;
+  try {
+    await ensureContentScript(tab.id, { agentUi: false });
+    const res = await chrome.tabs.sendMessage(tab.id, {
+      type: 'describe-selector',
+      selector: pick.selector,
+    });
+    if (res?.pick?.selector) {
+      return {
+        ...pick,
+        ...res.pick,
+        // Keep original pick time if present
+        pickedAt: pick.pickedAt || res.pick.pickedAt,
+      };
+    }
+  } catch {}
+  return pick;
 }
 
 async function startPickerOnUserTab() {
@@ -1018,6 +1114,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg.type === 'pageContext') {
     getPageContext({ screenshot: msg.screenshot === true }).then(sendResponse);
+    return true;
+  }
+
+  if (msg.type === 'elementCrop') {
+    (async () => {
+      let pick = msg.pick || null;
+      if (msg.enrich !== false && pick?.selector) {
+        pick = await enrichPick(pick);
+      }
+      const screenshot = pick ? await captureElementCrop(pick, msg.opts || {}) : null;
+      sendResponse({ pick, screenshot });
+    })().catch(() => sendResponse({ pick: msg.pick || null, screenshot: null }));
     return true;
   }
 

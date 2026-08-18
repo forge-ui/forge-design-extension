@@ -448,10 +448,6 @@ export function buildGrokPrompt({ text, page, screenshotPath, pick, place, place
     parts.push(`url: ${page.url}`);
     if (page.title) parts.push(`title: ${page.title}`);
   }
-  if (screenshotPath) {
-    parts.push(`viewport screenshot (optional): ${screenshotPath}`);
-    parts.push('需要看画面时再用 read_file 打开截图；纯文案/代码问题直接答，不要为了看图先卡住。');
-  }
   const batch = Array.isArray(places) && places.length
     ? places
     : Array.isArray(place?.places) && place.places.length
@@ -526,11 +522,59 @@ export function buildGrokPrompt({ text, page, screenshotPath, pick, place, place
     parts.push('如果当前页不是这个仓库跑起来的页面，不要假装已经插入；说明无法写入当前页，并指出应改哪个本地文件。');
     parts.push('不要手搓等价 UI。只用 @forge-ui-official/core 导出的组件。');
   } else if (pick?.selector) {
-    parts.push('用户选中了这个元素，请把它当作这次要改、要看的目标：');
+    parts.push('用户选中了这个元素。以 DOM 定位为准（不要靠猜截图）：');
     parts.push(`selector: ${pick.selector}`);
+    if (pick.unique === false) {
+      parts.push('selector unique: false（可能匹配多个节点，结合 ancestors / text / html 消歧）');
+    }
     parts.push(`tag: ${pick.tag || ''}`);
+    if (pick.id) parts.push(`id: ${pick.id}`);
+    if (pick.testid) parts.push(`testid: ${pick.testid}`);
+    if (pick.role) parts.push(`role: ${pick.role}`);
+    if (pick.ariaLabel) parts.push(`aria-label: ${pick.ariaLabel}`);
     parts.push(`text: ${pick.text || ''}`);
-    parts.push(`testid: ${pick.testid || ''}`);
+    if (pick.classes?.length) parts.push(`classes: ${pick.classes.join(' ')}`);
+    if (pick.rect) {
+      parts.push(
+        `rect (viewport css px): x=${pick.rect.x} y=${pick.rect.y} w=${pick.rect.w} h=${pick.rect.h}`
+      );
+    }
+    if (pick.viewport) {
+      parts.push(`viewport: ${pick.viewport.w}x${pick.viewport.h} dpr=${pick.dpr || 1}`);
+    }
+    if (pick.styles && typeof pick.styles === 'object') {
+      const styleLine = Object.entries(pick.styles)
+        .filter(([, value]) => value != null && String(value).trim() !== '')
+        .map(([key, value]) => `${key}:${value}`)
+        .join('; ');
+      if (styleLine) parts.push(`computed styles: ${styleLine}`);
+    }
+    if (pick.html) parts.push(`outerHTML: ${pick.html}`);
+    if (pick.ancestors?.length) {
+      const chain = pick.ancestors
+        .map((item) => {
+          const bits = [item.tag];
+          if (item.id) bits.push(`#${item.id}`);
+          if (item.testid) bits.push(`[data-testid=${item.testid}]`);
+          if (item.role) bits.push(`[role=${item.role}]`);
+          if (item.text) bits.push(`"${item.text}"`);
+          return bits.join('');
+        })
+        .join(' < ');
+      parts.push(`ancestors (up): ${chain}`);
+    }
+    if (pick.siblings?.length) {
+      const side = pick.siblings
+        .map((item) => `${item.tag}${item.text ? `:"${item.text}"` : ''}`)
+        .join(', ');
+      parts.push(`siblings: ${side}`);
+    }
+  }
+  if (screenshotPath) {
+    parts.push(`element crop (optional visual): ${screenshotPath}`);
+    parts.push(
+      '截图是选中元素附近的小图，不是整页。改颜色/间距可看；改文案/结构/写源码优先用上面的 DOM，不必先 read_file。'
+    );
   }
   if (parts.length) parts.push('');
   parts.push(text);
