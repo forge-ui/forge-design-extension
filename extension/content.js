@@ -84,6 +84,26 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/** Double-rAF with timeout — background agent tabs often never fire rAF. */
+function nextFrames(count = 2, timeoutMs = 48) {
+  return new Promise((resolve) => {
+    let left = Math.max(1, count);
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      resolve();
+    };
+    const tick = () => {
+      left -= 1;
+      if (left <= 0) finish();
+      else requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+    setTimeout(finish, timeoutMs);
+  });
+}
+
 async function waitFor(selector, timeoutMs = 10000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -1467,7 +1487,8 @@ async function pointAtElement(el, label = '', click = false) {
   try {
     agentNotify();
     // Wait a frame after scroll so x.com layout / virtualized lists settle.
-    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    // Must not hang on background agent tabs (rAF is throttled/paused there).
+    await nextFrames(2, 48);
     const center = elementCenter(el);
     if (!center) return null;
 
@@ -1789,9 +1810,15 @@ async function handleDomCommand(command, args) {
   }
 }
 
+window.__gcbContentVersion = '0.3.24';
+
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'ping') {
-    sendResponse({ ok: true, palette: typeof window.ForgePalette?.mount === 'function' });
+    sendResponse({
+      ok: true,
+      version: window.__gcbContentVersion || null,
+      palette: typeof window.ForgePalette?.mount === 'function',
+    });
     return true;
   }
 

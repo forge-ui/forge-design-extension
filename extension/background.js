@@ -451,25 +451,33 @@ async function enableAgentUi(tabId) {
 }
 
 const CONTENT_SCRIPTS = ['agent-ui.js', 'vendor/forge-palette.js', 'content.js'];
+const CONTENT_SCRIPT_VERSION = chrome.runtime.getManifest().version;
 
 async function ensureContentScript(tabId, opts = {}) {
   const agentUi = opts.agentUi !== false && tabId === agentTabId;
   // Prefer ping-first so we do NOT re-inject content.js on every command.
   // Re-injection stacks message listeners and races cursor movement on SPA sites
-  // like x.com.
+  // like x.com. Stale builds (version mismatch) force a tab reload once.
   try {
     const ping = await chrome.tabs.sendMessage(tabId, { type: 'ping' });
-    if (ping?.ok && !ping.palette) {
+    if (ping?.ok && ping.version && ping.version !== CONTENT_SCRIPT_VERSION) {
       try {
-        await chrome.scripting.executeScript({
-          target: { tabId },
-          files: ['vendor/forge-palette.js'],
-        });
+        await chrome.tabs.reload(tabId);
+        await waitTabComplete(tabId);
       } catch {}
-    }
-    if (ping?.ok) {
-      if (agentUi) await enableAgentUi(tabId);
-      return true;
+    } else {
+      if (ping?.ok && !ping.palette) {
+        try {
+          await chrome.scripting.executeScript({
+            target: { tabId },
+            files: ['vendor/forge-palette.js'],
+          });
+        } catch {}
+      }
+      if (ping?.ok) {
+        if (agentUi) await enableAgentUi(tabId);
+        return true;
+      }
     }
   } catch {
     // not injected yet (or context invalidated after navigation)
