@@ -401,6 +401,9 @@ let placing = null;
 let pendingPlaces = [];
 let handledPlaceAt = '';
 let sending = false;
+let sendGeneration = 0;
+let messageQueue = [];
+let queueSeq = 0;
 let stickToBottom = true;
 let lastThreadScrollTop = 0;
 let ignoreThreadScroll = false;
@@ -538,6 +541,7 @@ function renderAssistant(el, msg) {
 }
 
 function renderMessages() {
+  const prevScroll = thread.scrollTop;
   thread.querySelectorAll('.msg').forEach((node) => node.remove());
   empty.hidden = current.messages.length > 0;
   for (const msg of current.messages) {
@@ -552,7 +556,13 @@ function renderMessages() {
     }
     thread.appendChild(el);
   }
-  syncThreadScroll();
+  if (stickToBottom) {
+    syncThreadScroll();
+    return;
+  }
+  thread.scrollTop = prevScroll;
+  lastThreadScrollTop = thread.scrollTop;
+  syncJumpLatest();
 }
 
 function isThreadNearBottom() {
@@ -876,7 +886,7 @@ function applyPlaces(places) {
   const text = extra
     ? `按编号一次性插入这些组件，写成完整页面。${layoutNote}${extra}\n${lines.join('\n')}`
     : `按编号一次性插入这些组件，写成完整页面。${layoutNote}\n${lines.join('\n')}`;
-  sendMessage(text, {
+  sendOrQueue(text, {
     places: batch,
     place: batch[0],
     layout: lines.join('\n'),
@@ -1072,21 +1082,60 @@ async function setCurrentCwd(dir) {
   moreMenu.hidden = true;
 }
 
-async function loadSession(id) {
-  const session = await api(`/sessions/${id}`);
+function applySession(session, { stick = true } = {}) {
   current = {
     id: session.id,
     cwd: session.cwd,
     title: session.title,
+    updatedAt: session.updatedAt || null,
     messages: session.messages || [],
   };
-  stickToBottom = true;
+  if (stick) stickToBottom = true;
   setTitle(session.title);
   renderMessages();
 }
 
+function sessionFingerprint(session) {
+  const messages = session?.messages || [];
+  const last = messages[messages.length - 1];
+  return [
+    session?.id || '',
+    session?.updatedAt || '',
+    messages.length,
+    last?.role || '',
+    last?.text || '',
+  ].join('\n');
+}
+
+async function syncCurrentSession() {
+  if (!current.id || sending) return;
+  try {
+    const session = await api(`/sessions/${current.id}`);
+    if (!session || sending || current.id !== session.id) return;
+    if (sessionFingerprint(current) === sessionFingerprint(session)) return;
+    applySession(session, { stick: stickToBottom });
+  } catch {}
+}
+
+let sessionPollTimer = null;
+
+function startSessionPoll() {
+  if (sessionPollTimer) return;
+  sessionPollTimer = setInterval(() => {
+    if (document.visibilityState === 'hidden') return;
+    void syncCurrentSession();
+  }, 2500);
+}
+
+async function loadSession(id) {
+  abandonTurn();
+  const session = await api(`/sessions/${id}`);
+  applySession(session, { stick: true });
+}
+
 function newChat() {
-  current = { id: null, cwd: currentCwd || null, title: '新对话', messages: [] };
+  abandonTurn();
+  current = { id: null, cwd: currentCwd || null, title: '新对话', updatedAt: null, messages: [] };
   stickToBottom = true;
   setTitle('新对话');
   renderMessages();
@@ -1124,6 +1173,7 @@ function getElementCrop(pick, opts = {}) {
 
 function setSending(next) {
   sending = next;
+  input.placeholder = next ? '排队下一条，当前轮结束后发送' : '问问这个页面';
   if (sending) {
     sendBtn.disabled = false;
     sendBtn.classList.add('ready', 'stop');
@@ -1138,6 +1188,79 @@ function setSending(next) {
 
 function stopMessage() {
   if (activeAbort) activeAbort.abort();
+}
+
+function clearMessageQueue() {
+  messageQueue = [];
+  renderQueue();
+}
+
+function abandonTurn() {
+  sendGeneration += 1;
+  clearMessageQueue();
+  if (sending) stopMessage();
+}
+
+function renderQueue() {
+  const root = document.getElementById('messageQueue');
+  if (!root) return;
+  root.hidden = messageQueue.length === 0;
+  root.replaceChildren();
+  if (!messageQueue.length) return;
+  const head = document.createElement('div');
+  head.className = 'queue-head';
+  head.textContent =
+    messageQueue.length === 1 ? '排队 1 条 · 当前轮结束后发送' : `排队 ${messageQueue.length} 条 · 当前轮结束后发送`;
+  root.appendChild(head);
+  for (const item of messageQueue) {
+    const row = document.createElement('div');
+    row.className = 'queue-row';
+    const text = document.createElement('span');
+    text.className = 'queue-text';
+    text.textContent = item.text;
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'queue-remove';
+    remove.title = '取消排队';
+    remove.innerHTML =
+      '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true"><path d="m15 9-6 6m0-6 6 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.5"/></svg>';
+    remove.addEventListener('click', () => {
+      messageQueue = messageQueue.filter((entry) => entry.id !== item.id);
+      renderQueue();
+    });
+    row.append(text, remove);
+    root.appendChild(row);
+  }
+}
+
+function enqueueMessage(text, options = {}) {
+  const trimmed = String(text || '').trim();
+  if (!trimmed) return;
+  messageQueue.push({
+    id: `q${++queueSeq}`,
+    text: trimmed,
+    options,
+  });
+  input.value = '';
+  resizeInput();
+  renderQueue();
+}
+
+function sendOrQueue(text, options = {}) {
+  const trimmed = String(text || '').trim();
+  if (!trimmed) return;
+  if (sending) {
+    enqueueMessage(trimmed, options);
+    return;
+  }
+  void sendMessage(trimmed, options);
+}
+
+function drainQueue() {
+  if (sending || !messageQueue.length) return;
+  const next = messageQueue.shift();
+  renderQueue();
+  void sendMessage(next.text, next.options || {});
 }
 
 async function readSseEvents(res, onEvent) {
@@ -1160,6 +1283,7 @@ async function readSseEvents(res, onEvent) {
 
 async function sendMessage(text, options = {}) {
   if (sending || !text.trim()) return;
+  const generation = sendGeneration;
   setSending(true);
   const startedAt = Date.now();
   const abort = new AbortController();
@@ -1229,15 +1353,10 @@ async function sendMessage(text, options = {}) {
       if (event.type === 'error') throw new Error(event.message || 'grok error');
     });
     flushStreamingPaint();
+    if (generation !== sendGeneration) return;
     if (result.session) {
-      current = {
-        id: result.session.id,
-        cwd: result.session.cwd,
-        title: result.session.title,
-        messages: result.session.messages || [],
-      };
+      applySession(result.session, { stick: true });
       stampAssistantMeta(current.messages, startedAt);
-      setTitle(current.title);
     } else {
       current.messages = current.messages.filter((msg) => !msg.pending);
       current.messages.push({
@@ -1252,6 +1371,7 @@ async function sendMessage(text, options = {}) {
     void refreshSessions();
   } catch (err) {
     flushStreamingPaint();
+    if (generation !== sendGeneration) return;
     if (err.name === 'AbortError') {
       const pending = current.messages.find((msg) => msg.role === 'assistant' && msg.pending);
       if (pending) {
@@ -1268,6 +1388,7 @@ async function sendMessage(text, options = {}) {
   } finally {
     activeAbort = null;
     if (sending) finishStreamUi();
+    if (generation === sendGeneration) drainQueue();
   }
 }
 
@@ -1433,7 +1554,7 @@ dirForm.addEventListener('submit', async (event) => {
 composer.addEventListener('submit', (event) => {
   event.preventDefault();
   if (sending) stopMessage();
-  else sendMessage(input.value.trim());
+  else sendOrQueue(input.value.trim());
 });
 
 thread.addEventListener('scroll', () => {
@@ -1464,7 +1585,7 @@ input.addEventListener('compositionend', resizeInput);
 input.addEventListener('keydown', (event) => {
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
-    sendMessage(input.value.trim());
+    sendOrQueue(input.value.trim());
   }
 });
 
@@ -1626,7 +1747,12 @@ async function connectApp() {
   } catch {}
   if (currentCwd && !current.cwd) current.cwd = currentCwd;
   resizeInput();
+  startSessionPoll();
 }
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') void syncCurrentSession();
+});
 
 document.getElementById('dismissUpdateBtn').addEventListener('click', async () => {
   if (pendingUpdateVersion) {

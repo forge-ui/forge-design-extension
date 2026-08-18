@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -35,11 +35,45 @@ function flattenContent(content) {
   return '';
 }
 
+const INJECTED_CONTEXT_RE =
+  /用户当前正在看这个 Chrome 页面：|用户选中了这个元素|用户要把一个 Forge 组件|用户要把多个 Forge 组件|element crop \(optional visual\):|截图是选中元素附近的小图/;
+const CROP_HINT = '截图是选中元素附近的小图，不是整页。';
+const CONTINUATION_RE = /^This session is being continued from a previous conversation/i;
+
+export function looksLikeInjectedContext(text) {
+  return INJECTED_CONTEXT_RE.test(String(text || ''));
+}
+
+export function stripInjectedContext(text) {
+  const raw = String(text || '').trim();
+  if (!raw || !looksLikeInjectedContext(raw)) return raw;
+  const cropAt = raw.lastIndexOf(CROP_HINT);
+  if (cropAt >= 0) {
+    const lineEnd = raw.indexOf('\n', cropAt);
+    const rest = (lineEnd >= 0 ? raw.slice(lineEnd + 1) : '').trim();
+    if (rest) return rest;
+  }
+  const breakAt = raw.indexOf('\n\n');
+  if (breakAt >= 0) {
+    const rest = raw.slice(breakAt + 2).trim();
+    if (rest) return rest;
+  }
+  return raw;
+}
+
+function chunkText(content) {
+  if (content == null) return '';
+  if (typeof content === 'string') return content;
+  if (typeof content.text === 'string') return content.text;
+  return '';
+}
+
 export function extractUserText(content) {
   const raw = flattenContent(content).trim();
   if (!raw) return '';
-  const query = raw.match(/<user_query>\s*([\s\S]*?)\s*<\/user_query>/);
-  if (query) return query[1].trim();
+  if (CONTINUATION_RE.test(raw)) return '';
+  const queries = [...raw.matchAll(/<user_query>\s*([\s\S]*?)\s*<\/user_query>/gi)];
+  if (queries.length) return stripInjectedContext(queries[queries.length - 1][1].trim());
   if (/<(user_info|system-reminder|image_files|environment_context|mcp_|skill)\b/i.test(raw)) {
     return '';
   }
@@ -48,7 +82,7 @@ export function extractUserText(content) {
     .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '')
     .replace(/<image_files>[\s\S]*?<\/image_files>/g, '')
     .trim();
-  return stripped;
+  return stripInjectedContext(stripped);
 }
 
 export function normalizeCwd(dir) {
@@ -259,33 +293,94 @@ function attachTurnMetas(messages, turns, fallbackAt) {
   }
 }
 
+export function readMessagesFromUpdates(dir) {
+  const updatesPath = path.join(dir, 'updates.jsonl');
+  if (!fs.existsSync(updatesPath)) return null;
+  const messages = [];
+  let userText = '';
+  let userIndex = null;
+  let assistantText = '';
+
+  const flushUser = () => {
+    const text = extractUserText(userText);
+    userText = '';
+    userIndex = null;
+    if (text) messages.push({ role: 'user', text: text.slice(0, 8000) });
+  };
+  const flushAssistant = () => {
+    const text = assistantText.trim();
+    assistantText = '';
+    if (text) messages.push({ role: 'assistant', text: text.slice(0, 8000) });
+  };
+
+  const lines = fs.readFileSync(updatesPath, 'utf8').split('\n');
+  for (const line of lines) {
+    if (
+      !line.includes('user_message_chunk') &&
+      !line.includes('agent_message_chunk') &&
+      !line.includes('turn_completed')
+    ) {
+      continue;
+    }
+    let row;
+    try {
+      row = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const update = row.params?.update || row.update || {};
+    const kind = update.sessionUpdate;
+    if (kind === 'user_message_chunk') {
+      flushAssistant();
+      const index = update._meta?.promptIndex;
+      if (userText && index != null && userIndex != null && index !== userIndex) flushUser();
+      if (index != null) userIndex = index;
+      userText += chunkText(update.content);
+    } else if (kind === 'agent_message_chunk') {
+      flushUser();
+      assistantText += chunkText(update.content);
+    } else if (kind === 'turn_completed') {
+      flushUser();
+      flushAssistant();
+    }
+  }
+  flushUser();
+  flushAssistant();
+  return messages;
+}
+
+function readMessagesFromHistory(dir) {
+  const historyPath = path.join(dir, 'chat_history.jsonl');
+  const messages = [];
+  if (!fs.existsSync(historyPath)) return messages;
+  const lines = fs.readFileSync(historyPath, 'utf8').split('\n');
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    let row;
+    try {
+      row = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (row.type !== 'user' && row.type !== 'assistant') continue;
+    const text =
+      row.type === 'user' ? extractUserText(row.content) : flattenContent(row.content);
+    if (!text && row.type === 'assistant' && row.tool_calls) continue;
+    if (!text) continue;
+    messages.push({
+      role: row.type,
+      text: text.slice(0, 8000),
+    });
+  }
+  return messages;
+}
+
 export function readSession(sessionId, { messageLimit = 80 } = {}) {
   const dir = findSessionDir(sessionId);
   if (!dir) return null;
   const summary = JSON.parse(fs.readFileSync(path.join(dir, 'summary.json'), 'utf8'));
-  const historyPath = path.join(dir, 'chat_history.jsonl');
-  const messages = [];
-  if (fs.existsSync(historyPath)) {
-    const lines = fs.readFileSync(historyPath, 'utf8').split('\n');
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      let row;
-      try {
-        row = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      if (row.type !== 'user' && row.type !== 'assistant') continue;
-      const text =
-        row.type === 'user' ? extractUserText(row.content) : flattenContent(row.content);
-      if (!text && row.type === 'assistant' && row.tool_calls) continue;
-      if (!text) continue;
-      messages.push({
-        role: row.type,
-        text: text.slice(0, 8000),
-      });
-    }
-  }
+  const fromUpdates = readMessagesFromUpdates(dir);
+  const messages = fromUpdates && fromUpdates.length ? fromUpdates : readMessagesFromHistory(dir);
   const visible = messages.slice(-messageLimit);
   const updatedAt = summary.last_active_at || summary.updated_at || summary.created_at || null;
   attachTurnMetas(visible, readTurnMetas(dir), updatedAt);
@@ -308,17 +403,18 @@ function osascriptQuote(value) {
   return `"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
 
-function grokArgs({ prompt, sessionId, cwd, stream }) {
+function grokArgs({ prompt, rules, sessionId, cwd, stream }) {
   const args = ['-p', prompt, '--always-approve'];
   args.push('--output-format', stream ? 'streaming-json' : 'json');
+  if (rules) args.push('--rules', rules);
   if (sessionId) args.push('--resume', sessionId);
   if (cwd) args.push('--cwd', cwd);
   return args;
 }
 
-export function runGrok({ prompt, sessionId, cwd, timeoutMs = 600000 }) {
+export function runGrok({ prompt, rules, sessionId, cwd, timeoutMs = 600000 }) {
   return new Promise((resolve, reject) => {
-    const child = spawn(resolveGrokBin(), grokArgs({ prompt, sessionId, cwd, stream: false }), {
+    const child = spawn(resolveGrokBin(), grokArgs({ prompt, rules, sessionId, cwd, stream: false }), {
       cwd: cwd || os.homedir(),
       env: process.env,
     });
@@ -353,8 +449,8 @@ export function runGrok({ prompt, sessionId, cwd, timeoutMs = 600000 }) {
   });
 }
 
-export function startGrokStream({ prompt, sessionId, cwd, timeoutMs = 600000, onEvent }) {
-  const child = spawn(resolveGrokBin(), grokArgs({ prompt, sessionId, cwd, stream: true }), {
+export function startGrokStream({ prompt, rules, sessionId, cwd, timeoutMs = 600000, onEvent }) {
+  const child = spawn(resolveGrokBin(), grokArgs({ prompt, rules, sessionId, cwd, stream: true }), {
     cwd: cwd || os.homedir(),
     env: process.env,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -441,7 +537,7 @@ function cryptoRandom() {
   return Math.random().toString(36).slice(2, 8);
 }
 
-export function buildGrokPrompt({ text, page, screenshotPath, pick, place, places }) {
+export function buildGrokContext({ page, screenshotPath, pick, place, places }) {
   const parts = [];
   if (page?.url) {
     parts.push('用户当前正在看这个 Chrome 页面：');
@@ -576,14 +672,263 @@ export function buildGrokPrompt({ text, page, screenshotPath, pick, place, place
       '截图是选中元素附近的小图，不是整页。改颜色/间距可看；改文案/结构/写源码优先用上面的 DOM，不必先 read_file。'
     );
   }
-  if (parts.length) parts.push('');
-  parts.push(text);
   return parts.join('\n');
+}
+
+export function buildGrokPrompt({ text, page, screenshotPath, pick, place, places }) {
+  const context = buildGrokContext({ page, screenshotPath, pick, place, places });
+  if (!context) return text;
+  return `${context}\n\n${text}`;
+}
+
+export function sanitizePromptForTty(text) {
+  return String(text || '')
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
+    .replace(/\r/g, '')
+    .replace(/\n+/g, ' ')
+    .trim();
+}
+
+export function userChunkMatchesPrompt(chunkText, expected) {
+  const got = extractUserText(chunkText).replace(/\s+/g, ' ').trim();
+  const want = String(expected || '').replace(/\s+/g, ' ').trim();
+  if (!got || !want) return false;
+  return got === want || got.endsWith(want);
+}
+
+export function consumeUpdateLines(lines, state, expectedPrompt) {
+  const events = [];
+  for (const line of lines) {
+    if (
+      !line.includes('user_message_chunk') &&
+      !line.includes('agent_message_chunk') &&
+      !line.includes('turn_completed')
+    ) {
+      continue;
+    }
+    let row;
+    try {
+      row = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const update = row.params?.update || row.update || {};
+    const kind = update.sessionUpdate;
+    if (kind === 'user_message_chunk') {
+      const part = chunkText(update.content);
+      if (!part) continue;
+      if (state.sawUser) {
+        if (userChunkMatchesPrompt(part, expectedPrompt)) state.userText += part;
+        continue;
+      }
+      if (userChunkMatchesPrompt(part, expectedPrompt) || userChunkMatchesPrompt(state.userText + part, expectedPrompt)) {
+        state.sawUser = true;
+        state.userText = '';
+        state.text = '';
+      } else {
+        state.userText += part;
+      }
+      continue;
+    }
+    if (kind === 'agent_message_chunk' && state.sawUser) {
+      const part = chunkText(update.content);
+      if (!part) continue;
+      state.text += part;
+      events.push({ type: 'text', data: part });
+      continue;
+    }
+    if (kind === 'turn_completed' && state.sawUser) {
+      events.push({ type: 'done' });
+      return events;
+    }
+  }
+  return events;
+}
+
+function readActiveSessions() {
+  const file = path.join(grokHome(), 'active_sessions.json');
+  if (!fs.existsSync(file)) return [];
+  try {
+    const rows = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return Array.isArray(rows) ? rows : [];
+  } catch {
+    return [];
+  }
+}
+
+function processLooksLikeGrok(pid) {
+  try {
+    const comm = execFileSync('ps', ['-p', String(pid), '-o', 'comm='], {
+      encoding: 'utf8',
+      timeout: 1000,
+    }).trim();
+    return /grok/i.test(comm);
+  } catch {
+    return false;
+  }
+}
+
+function ttyForPid(pid) {
+  try {
+    const tty = execFileSync('ps', ['-p', String(pid), '-o', 'tty='], {
+      encoding: 'utf8',
+      timeout: 1000,
+    }).trim();
+    if (!tty || tty === '??' || tty === '-') return null;
+    const dev = tty.startsWith('/') ? tty : path.join('/dev', tty);
+    return fs.existsSync(dev) ? dev : null;
+  } catch {
+    return null;
+  }
+}
+
+function pidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function findLiveTui(sessionId) {
+  if (!sessionId) return null;
+  const hit = readActiveSessions().find((row) => row.session_id === sessionId || row.id === sessionId);
+  if (!hit?.pid) return null;
+  const pid = Number(hit.pid);
+  if (!Number.isFinite(pid) || !pidAlive(pid) || !processLooksLikeGrok(pid)) return null;
+  const tty = ttyForPid(pid);
+  if (!tty) return null;
+  return { pid, tty, cwd: hit.cwd || null, sessionId };
+}
+
+export function writeToTty(tty, bytes) {
+  const fd = fs.openSync(tty, 'w');
+  try {
+    fs.writeSync(fd, bytes);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+export function injectPromptToTui(tty, text) {
+  const payload = sanitizePromptForTty(text);
+  if (!payload) throw new Error('empty prompt');
+  writeToTty(tty, `\u0015${payload}\r`);
+}
+
+function pullNewLines(filePath, cursor) {
+  if (!fs.existsSync(filePath)) return [];
+  const size = fs.statSync(filePath).size;
+  if (size < cursor.offset) {
+    cursor.offset = 0;
+    cursor.carry = '';
+  }
+  if (size === cursor.offset) return [];
+  const length = size - cursor.offset;
+  const buf = Buffer.alloc(length);
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    fs.readSync(fd, buf, 0, length, cursor.offset);
+  } finally {
+    fs.closeSync(fd);
+  }
+  cursor.offset = size;
+  cursor.carry += buf.toString('utf8');
+  const lines = cursor.carry.split('\n');
+  cursor.carry = lines.pop() || '';
+  return lines.filter((line) => line.trim());
+}
+
+export function startLiveTuiTurn({
+  sessionId,
+  tty,
+  prompt,
+  timeoutMs = 600000,
+  onEvent,
+  skipInject = false,
+}) {
+  const dir = findSessionDir(sessionId);
+  if (!dir) throw new Error('session not found');
+  const updatesPath = path.join(dir, 'updates.jsonl');
+  const cursor = {
+    offset: fs.existsSync(updatesPath) ? fs.statSync(updatesPath).size : 0,
+    carry: '',
+  };
+  if (!skipInject) injectPromptToTui(tty, prompt);
+  const state = { sawUser: false, userText: '', text: '' };
+  let timer = null;
+  let settled = false;
+  let resolveDone;
+  let rejectDone;
+  const done = new Promise((resolve, reject) => {
+    resolveDone = resolve;
+    rejectDone = reject;
+  });
+
+  const finish = (result, error) => {
+    if (settled) return;
+    settled = true;
+    if (timer) clearInterval(timer);
+    timer = null;
+    if (error) rejectDone(error);
+    else resolveDone(result);
+  };
+
+  const deadline = Date.now() + timeoutMs;
+  const tick = () => {
+    if (settled) return;
+    if (Date.now() > deadline) {
+      finish(null, new Error('grok timed out'));
+      return;
+    }
+    let lines;
+    try {
+      lines = pullNewLines(updatesPath, cursor);
+    } catch (err) {
+      finish(null, err);
+      return;
+    }
+    const events = consumeUpdateLines(lines, state, sanitizePromptForTty(prompt));
+    for (const event of events) {
+      if (event.type === 'text') {
+        onEvent?.(event);
+        continue;
+      }
+      if (event.type === 'done') {
+        finish({ text: state.text, sessionId, stopped: false });
+        return;
+      }
+    }
+  };
+  timer = setInterval(tick, 160);
+  tick();
+
+  return {
+    stop() {
+      if (settled) return;
+      try {
+        writeToTty(tty, '\u0003');
+      } catch {}
+      finish({ text: state.text, sessionId, stopped: true });
+    },
+    done,
+  };
 }
 
 export function openSessionInTerminal({ sessionId, cwd }) {
   if (!sessionId) return Promise.reject(new Error('sessionId required'));
   const workdir = cwd || os.homedir();
+  const live = findLiveTui(sessionId);
+  if (live) {
+    return Promise.resolve({
+      ok: true,
+      sessionId,
+      cwd: workdir,
+      alreadyOpen: true,
+      pid: live.pid,
+    });
+  }
   const script = `cd ${shellSingleQuote(workdir)} && exec ${shellSingleQuote(resolveGrokBin())} --resume ${shellSingleQuote(sessionId)}`;
   return new Promise((resolve, reject) => {
     const child = spawn('osascript', ['-e', `tell application "Terminal" to do script ${osascriptQuote(script)}`]);
@@ -594,7 +939,7 @@ export function openSessionInTerminal({ sessionId, cwd }) {
     child.on('error', reject);
     child.on('close', (code) => {
       if (code !== 0) reject(new Error(stderr || `osascript exited ${code}`));
-      else resolve({ ok: true, sessionId, cwd: workdir });
+      else resolve({ ok: true, sessionId, cwd: workdir, alreadyOpen: false });
     });
   });
 }

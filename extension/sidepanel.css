@@ -779,7 +779,8 @@ body.setup-on .jump-latest {
 .pick-clear[hidden],
 .jump-latest[hidden],
 .palette[hidden],
-.place-banner[hidden] {
+.place-banner[hidden],
+.message-queue[hidden] {
   display: none !important;
 }
 
@@ -803,6 +804,63 @@ body.setup-on .jump-latest {
   padding: 10px;
   font-size: 12px;
   color: var(--muted);
+}
+
+.message-queue {
+  margin-bottom: 8px;
+  border: 1px solid var(--fg-grey-200);
+  border-radius: 12px;
+  background: var(--fg-grey-50);
+  overflow: hidden;
+}
+
+.queue-head {
+  padding: 6px 10px 4px;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 16px;
+  color: var(--fg-grey-700);
+}
+
+.queue-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 6px 10px;
+}
+
+.queue-row + .queue-row {
+  border-top: 1px solid var(--fg-grey-200);
+}
+
+.queue-text {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--fg-black);
+}
+
+.queue-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-grey-700);
+  cursor: pointer;
+}
+
+.queue-remove:hover {
+  background: var(--fg-grey-200);
+  color: var(--fg-black);
 }
 
 .composer {

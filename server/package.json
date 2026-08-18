@@ -6,7 +6,8 @@
   "description": "Local control server for the Forge Design Chrome extension",
   "scripts": {
     "start": "node server.js",
-    "cli": "node cli.js"
+    "cli": "node cli.js",
+    "test": "node --test sessions.test.js"
   },
   "dependencies": {
     "ws": "^8.18.3"

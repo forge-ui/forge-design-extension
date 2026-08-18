@@ -22,8 +22,11 @@ import {
   runGrok,
   startGrokStream,
   writeScreenshotFile,
-  buildGrokPrompt,
+  buildGrokContext,
   openSessionInTerminal,
+  findLiveTui,
+  injectPromptToTui,
+  startLiveTuiTurn,
 } from './sessions.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -205,14 +208,14 @@ async function handleGrokTurn(req, res, { session } = {}) {
   const cwd = payload.cwd || session?.cwd || os.homedir();
   const screenshotPath = writeScreenshotFile(payload.screenshot);
   const places = Array.isArray(payload.places) ? payload.places : payload.place?.places;
-  const prompt = buildGrokPrompt({
-    text,
+  const rules = buildGrokContext({
     page: payload.page,
     screenshotPath,
     pick: payload.pick,
     place: payload.place,
     places,
   });
+  const prompt = text;
   if (places?.length || payload.place?.component) {
     savePlace({
       ...(payload.place || {}),
@@ -222,10 +225,28 @@ async function handleGrokTurn(req, res, { session } = {}) {
     });
   }
   const stream = payload.stream === true || String(req.headers.accept || '').includes('text/event-stream');
+  let live = session?.id ? findLiveTui(session.id) : null;
+  if (live) {
+    try {
+      injectPromptToTui(live.tty, prompt);
+    } catch {
+      live = null;
+    }
+  }
+  if (live) {
+    return followLiveTuiTurn(req, res, {
+      session,
+      live,
+      prompt,
+      stream,
+      timeoutMs: payload.timeoutMs,
+    });
+  }
   if (!stream) {
     try {
       const result = await runGrok({
         prompt,
+        rules,
         sessionId: session?.id,
         cwd,
         timeoutMs: payload.timeoutMs,
@@ -260,6 +281,7 @@ async function handleGrokTurn(req, res, { session } = {}) {
   const textBatcher = createSseTextBatcher(res);
   const { child, done } = startGrokStream({
     prompt,
+    rules,
     sessionId: session?.id,
     cwd,
     timeoutMs: payload.timeoutMs,
@@ -300,6 +322,84 @@ async function handleGrokTurn(req, res, { session } = {}) {
     res.end();
   } finally {
     // Codex-style: release page agent UI (cursor/observers) when the turn ends.
+    releaseAgentUiAfterTurn();
+  }
+}
+
+async function followLiveTuiTurn(req, res, { session, live, prompt, stream, timeoutMs }) {
+  if (!stream) {
+    try {
+      const { done } = startLiveTuiTurn({
+        sessionId: session.id,
+        tty: live.tty,
+        prompt,
+        timeoutMs,
+        skipInject: true,
+      });
+      const result = await done;
+      const sessionId = session.id;
+      return json(res, 200, {
+        sessionId,
+        text: result.text || '',
+        stopped: !!result.stopped,
+        via: 'tui',
+        session: readSession(sessionId),
+      });
+    } catch (err) {
+      return json(res, 500, { error: err.message });
+    } finally {
+      releaseAgentUiAfterTurn();
+    }
+  }
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  if (typeof res.flushHeaders === 'function') {
+    try {
+      res.flushHeaders();
+    } catch {}
+  }
+  res.write('\n');
+  flushHttp(res);
+
+  const textBatcher = createSseTextBatcher(res);
+  const { stop, done } = startLiveTuiTurn({
+    sessionId: session.id,
+    tty: live.tty,
+    prompt,
+    timeoutMs,
+    skipInject: true,
+    onEvent: (event) => {
+      if (event.type === 'text' && event.data) {
+        textBatcher.pushText(event.data);
+      }
+    },
+  });
+  req.on('close', stop);
+
+  try {
+    const result = await done;
+    if (res.writableEnded) return;
+    textBatcher.flush();
+    writeSse(res, {
+      type: 'end',
+      sessionId: session.id,
+      text: result.text || '',
+      stopped: !!result.stopped,
+      via: 'tui',
+      session: readSession(session.id),
+    });
+    res.end();
+  } catch (err) {
+    if (res.writableEnded) return;
+    textBatcher.flush();
+    writeSse(res, { type: 'error', message: err.message });
+    res.end();
+  } finally {
     releaseAgentUiAfterTurn();
   }
 }
