@@ -140,7 +140,38 @@ function sendToExtension(message) {
 }
 
 function writeSse(res, event) {
+  if (res.writableEnded) return;
   res.write(`data: ${JSON.stringify(event)}\n\n`);
+}
+
+/** Coalesce token SSE writes to ~1 per animation frame budget (reduces sidepanel jank). */
+function createSseTextBatcher(res, { intervalMs = 32 } = {}) {
+  let pending = '';
+  let timer = null;
+  const flush = () => {
+    timer = null;
+    if (!pending || res.writableEnded) {
+      pending = '';
+      return;
+    }
+    const data = pending;
+    pending = '';
+    writeSse(res, { type: 'text', data });
+  };
+  return {
+    pushText(data) {
+      if (!data) return;
+      pending += data;
+      if (!timer) timer = setTimeout(flush, intervalMs);
+    },
+    flush() {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      flush();
+    },
+  };
 }
 
 async function handleGrokTurn(req, res, { session } = {}) {
@@ -188,6 +219,8 @@ async function handleGrokTurn(req, res, { session } = {}) {
       });
     } catch (err) {
       return json(res, 500, { error: err.message });
+    } finally {
+      releaseAgentUiAfterTurn();
     }
   }
 
@@ -198,12 +231,20 @@ async function handleGrokTurn(req, res, { session } = {}) {
   });
   res.write('\n');
 
+  const textBatcher = createSseTextBatcher(res);
   const { child, done } = startGrokStream({
     prompt,
     sessionId: session?.id,
     cwd,
     timeoutMs: payload.timeoutMs,
-    onEvent: (event) => writeSse(res, event),
+    onEvent: (event) => {
+      if (event.type === 'text' && event.data) {
+        textBatcher.pushText(event.data);
+        return;
+      }
+      textBatcher.flush();
+      writeSse(res, event);
+    },
   });
 
   const stop = () => {
@@ -216,6 +257,7 @@ async function handleGrokTurn(req, res, { session } = {}) {
   try {
     const result = await done;
     if (res.writableEnded) return;
+    textBatcher.flush();
     const sessionId = result.sessionId || session?.id || null;
     writeSse(res, {
       type: 'end',
@@ -227,9 +269,17 @@ async function handleGrokTurn(req, res, { session } = {}) {
     res.end();
   } catch (err) {
     if (res.writableEnded) return;
+    textBatcher.flush();
     writeSse(res, { type: 'error', message: err.message });
     res.end();
+  } finally {
+    // Codex-style: release page agent UI (cursor/observers) when the turn ends.
+    releaseAgentUiAfterTurn();
   }
+}
+
+function releaseAgentUiAfterTurn() {
+  runCommand('release-agent-ui', {}, 2000).catch(() => {});
 }
 
 function runCommand(command, args = {}, timeoutMs = 30000) {

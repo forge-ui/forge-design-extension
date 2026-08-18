@@ -456,19 +456,14 @@
     showClick();
   }
 
-  function isInteractiveStateChange(el, attributeName, oldValue) {
+  function isInteractiveStateChange(el, attributeName, _oldValue) {
     if (!(el instanceof Element)) return false;
     const value = attributeName ? el.getAttribute(attributeName) : null;
-    if (value === oldValue) return false;
     if (attributeName === 'aria-selected') return value === 'true';
     if (attributeName === 'aria-expanded') return value === 'true';
     if (attributeName === 'aria-current') return value != null && value !== 'false';
     if (attributeName === 'data-state') return ['active', 'checked', 'open', 'on', 'selected'].includes(value);
     if (attributeName === 'data-selected') return value != null && value !== 'false';
-    if (attributeName === 'class') {
-      const role = el.getAttribute('role');
-      return ['menuitem', 'option', 'tab', 'treeitem'].includes(role) && el.matches(':focus, [aria-selected="true"], [aria-expanded="true"], [data-state="active"], [data-state="open"]');
-    }
     return false;
   }
 
@@ -490,7 +485,8 @@
       for (const mutation of mutations) {
         if (mutation.type !== 'attributes') continue;
         const el = mutation.target;
-        if (isInteractiveStateChange(el, mutation.attributeName, mutation.oldValue)) {
+        // No attributeOldValue / no class watch — class churn on SPAs burns CPU.
+        if (isInteractiveStateChange(el, mutation.attributeName, null)) {
           pointAtStateElement(el);
           break;
         }
@@ -498,8 +494,13 @@
     });
     interactionObserver.observe(document.documentElement, {
       attributes: true,
-      attributeOldValue: true,
-      attributeFilter: ['aria-selected', 'aria-expanded', 'aria-current', 'data-state', 'data-selected', 'class'],
+      attributeFilter: [
+        'aria-selected',
+        'aria-expanded',
+        'aria-current',
+        'data-state',
+        'data-selected',
+      ],
       subtree: true,
     });
   }
@@ -595,21 +596,26 @@
   function startGuards() {
     applyFavicon();
     if (!headObserver && document.head) {
+      let debounce = 0;
       headObserver = new MutationObserver(() => {
         if (!enabled || applyingFavicon) return;
-        applyFavicon();
+        if (debounce) return;
+        debounce = setTimeout(() => {
+          debounce = 0;
+          if (enabled) applyFavicon();
+        }, 400);
       });
       headObserver.observe(document.head, {
         childList: true,
-        subtree: true,
+        subtree: false,
         attributes: true,
         attributeFilter: ['href', 'rel'],
       });
     }
-    if (!faviconTimer) {
-      faviconTimer = setInterval(() => {
-        if (enabled) applyFavicon();
-      }, 600);
+    // No tight setInterval — head observer is enough; idle release stops guards.
+    if (faviconTimer) {
+      clearInterval(faviconTimer);
+      faviconTimer = null;
     }
   }
 
@@ -672,10 +678,18 @@
       detachPageListeners();
       interactionObserver?.disconnect();
       interactionObserver = null;
+      if (scrollOutTimer) {
+        clearTimeout(scrollOutTimer);
+        scrollOutTimer = null;
+      }
+      if (scrollBackTimer) {
+        clearTimeout(scrollBackTimer);
+        scrollBackTimer = null;
+      }
       if (cursorEl) {
-        cursorEl.classList.remove('gcb-agent-cursor-visible');
-        // Keep node; only hide. Next move re-shows it.
-        cursorEl.style.setProperty('opacity', '0', 'important');
+        cursorEl.remove();
+        cursorEl = null;
+        cursorLabelEl = null;
       }
     }
   }

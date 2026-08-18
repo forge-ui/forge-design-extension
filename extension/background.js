@@ -25,6 +25,46 @@ let agentTabId = null;
 let lastPick = null;
 /** Last Forge block the user placed onto the page */
 let lastPlace = null;
+/** After automation goes quiet, tear down page observers/cursor (Codex-style release). */
+const AGENT_UI_IDLE_MS = 2500;
+let agentUiReleaseTimer = null;
+const READONLY_COMMANDS = new Set([
+  'status',
+  'tabs',
+  'url',
+  'title',
+  'last-pick',
+  'lastPick',
+  'last-place',
+  'lastPlace',
+  'release',
+  'release-agent-ui',
+  'agent-idle',
+  'releaseAgentUi',
+]);
+
+function noteAgentActivity() {
+  if (agentUiReleaseTimer) {
+    clearTimeout(agentUiReleaseTimer);
+    agentUiReleaseTimer = null;
+  }
+}
+
+function scheduleAgentUiRelease(delayMs = AGENT_UI_IDLE_MS) {
+  if (agentUiReleaseTimer) clearTimeout(agentUiReleaseTimer);
+  agentUiReleaseTimer = setTimeout(() => {
+    agentUiReleaseTimer = null;
+    if (agentTabId) disableAgentUi(agentTabId).catch(() => {});
+  }, delayMs);
+}
+
+async function releaseAgentUiNow() {
+  if (agentUiReleaseTimer) {
+    clearTimeout(agentUiReleaseTimer);
+    agentUiReleaseTimer = null;
+  }
+  if (agentTabId) await disableAgentUi(agentTabId);
+}
 
 function logAction(entry) {
   actionLog.unshift({ ...entry, ts: Date.now() });
@@ -499,6 +539,18 @@ async function sendToTab(tabId, message) {
 
 async function handleCommand(command, args) {
   logAction({ command, args });
+  if (
+    command === 'release' ||
+    command === 'release-agent-ui' ||
+    command === 'releaseAgentUi' ||
+    command === 'agent-idle'
+  ) {
+    await releaseAgentUiNow();
+    return { ok: true, released: true, agentTabId };
+  }
+
+  const keepAlive = !READONLY_COMMANDS.has(command);
+  if (keepAlive) noteAgentActivity();
   try {
     switch (command) {
       case 'status': {
@@ -829,6 +881,9 @@ async function handleCommand(command, args) {
     }
   } catch (err) {
     return { error: err.message || String(err) };
+  } finally {
+    // Drop cursor + MutationObservers once the tool burst is over.
+    if (keepAlive) scheduleAgentUiRelease();
   }
 }
 
@@ -915,6 +970,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg.type === 'cancelPick' || msg.type === 'cancelPlace') {
     handleCommand('cancel-pick', {}).then(sendResponse);
+    return true;
+  }
+
+  if (msg.type === 'releaseAgentUi') {
+    releaseAgentUiNow().then(() => sendResponse({ ok: true })).catch(() => sendResponse({ ok: false }));
     return true;
   }
 

@@ -578,20 +578,51 @@ function syncThreadScroll() {
   syncJumpLatest();
 }
 
-function updateStreamingText(text) {
-  const pending = current.messages.find((msg) => msg.role === 'assistant' && msg.pending);
-  if (pending) pending.text = text;
+// Stream paint: coalesce tokens to one frame, plain text only (no marked/sanitize per token).
+let streamPaintText = '';
+let streamPaintRaf = 0;
+let streamBodyEl = null;
+
+function ensureStreamingBody() {
+  if (streamBodyEl?.isConnected) return streamBodyEl;
   let el = thread.querySelector('.msg.assistant.streaming');
   if (!el) {
     el = thread.querySelector('.msg.assistant.pending');
-    if (!el) return;
+    if (!el) return null;
     el.className = 'msg assistant streaming';
-    el.innerHTML = `<div class="msg-body">${formatText(text, true)}</div>`;
-  } else {
-    const body = el.querySelector('.msg-body');
-    if (body) body.innerHTML = formatText(text, true);
+    el.innerHTML = '<div class="msg-body stream-plain"></div>';
+  }
+  streamBodyEl = el.querySelector('.msg-body');
+  return streamBodyEl;
+}
+
+function paintStreamingFrame() {
+  streamPaintRaf = 0;
+  const pending = current.messages.find((msg) => msg.role === 'assistant' && msg.pending);
+  if (pending) pending.text = streamPaintText;
+  const body = ensureStreamingBody();
+  if (!body) return;
+  // textContent + pre-wrap: O(1) DOM write, no markdown reparse / layout thrash
+  if (body.textContent !== streamPaintText) {
+    body.textContent = streamPaintText;
   }
   syncThreadScroll();
+}
+
+function updateStreamingText(text) {
+  streamPaintText = text;
+  if (streamPaintRaf) return;
+  streamPaintRaf = requestAnimationFrame(paintStreamingFrame);
+}
+
+function flushStreamingPaint() {
+  if (streamPaintRaf) {
+    cancelAnimationFrame(streamPaintRaf);
+    streamPaintRaf = 0;
+  }
+  if (streamPaintText) paintStreamingFrame();
+  streamBodyEl = null;
+  streamPaintText = '';
 }
 
 function renderPickChip() {
@@ -1151,12 +1182,15 @@ async function sendMessage(text, options = {}) {
     let result = {};
     await readSseEvents(res, (event) => {
       if (event.type === 'text') {
-        streamed = event.text || `${streamed}${event.data || ''}`;
+        // Prefer delta; fall back to cumulative text from older bridges
+        if (event.data) streamed += event.data;
+        else if (event.text != null) streamed = event.text;
         updateStreamingText(streamed);
       }
       if (event.type === 'end') result = event;
       if (event.type === 'error') throw new Error(event.message || 'grok error');
     });
+    flushStreamingPaint();
     if (result.session) {
       current = {
         id: result.session.id,
@@ -1175,8 +1209,11 @@ async function sendMessage(text, options = {}) {
       stampAssistantMeta(current.messages, startedAt);
       current.id = result.sessionId || current.id;
     }
-    await refreshSessions();
+    // Final markdown now; session list refresh must not block the reply paint
+    finishStreamUi();
+    void refreshSessions();
   } catch (err) {
+    flushStreamingPaint();
     if (err.name === 'AbortError') {
       const pending = current.messages.find((msg) => msg.role === 'assistant' && msg.pending);
       if (pending) {
@@ -1189,11 +1226,24 @@ async function sendMessage(text, options = {}) {
       current.messages.push({ role: 'assistant', text: `发送失败：${err.message}` });
       stampAssistantMeta(current.messages, startedAt);
     }
+    finishStreamUi();
   } finally {
     activeAbort = null;
-    setSending(false);
-    renderMessages();
+    if (sending) finishStreamUi();
   }
+}
+
+function finishStreamUi() {
+  streamBodyEl = null;
+  streamPaintText = '';
+  setSending(false);
+  renderMessages();
+  // Drop page agent overlays/observers as soon as the turn ends (do not wait idle).
+  try {
+    chrome.runtime.sendMessage({ type: 'releaseAgentUi' }, () => {
+      void chrome.runtime.lastError;
+    });
+  } catch {}
 }
 
 function closeMenus() {

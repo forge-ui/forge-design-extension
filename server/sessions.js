@@ -382,7 +382,8 @@ export function startGrokStream({ prompt, sessionId, cwd, timeoutMs = 600000, on
       }
       if (event.type === 'text' && event.data) {
         text += event.data;
-        onEvent?.({ type: 'text', data: event.data, text });
+        // Delta only — avoid O(n²) SSE payloads with full cumulative text
+        onEvent?.({ type: 'text', data: event.data });
       }
       if (event.type === 'end') {
         finalSessionId = event.sessionId || event.session_id || finalSessionId;

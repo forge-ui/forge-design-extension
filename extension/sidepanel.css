@@ -720,6 +720,12 @@ body.setup-on .jump-latest {
   white-space: normal;
 }
 
+/* Streaming: plain text, no per-token markdown parse */
+.msg.assistant.streaming .msg-body.stream-plain {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .thinking {
   display: flex;
   align-items: center;
