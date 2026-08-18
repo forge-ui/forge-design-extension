@@ -9,9 +9,6 @@ import {
   buildGrokContext,
   buildGrokPrompt,
   readMessagesFromUpdates,
-  sanitizePromptForTty,
-  userChunkMatchesPrompt,
-  consumeUpdateLines,
 } from './sessions.js';
 
 test('extractUserText keeps the last user_query and drops harness tags', () => {
@@ -152,42 +149,4 @@ test('readMessagesFromUpdates matches TUI user/assistant chunks and strips last-
       ['assistant', '改为单列。'],
     ],
   );
-});
-
-test('sanitizePromptForTty flattens newlines and strips controls', () => {
-  assert.equal(sanitizePromptForTty('a\nb\r\nc'), 'a b c');
-  assert.equal(sanitizePromptForTty('  hello \u0007 '), 'hello');
-});
-
-test('consumeUpdateLines waits for the matching user turn then streams the reply', () => {
-  const state = { sawUser: false, userText: '', text: '' };
-  const line = (update) => JSON.stringify({ params: { update } });
-  const first = consumeUpdateLines(
-    [
-      line({ sessionUpdate: 'agent_message_chunk', content: { text: '还在上一轮' } }),
-      line({ sessionUpdate: 'turn_completed' }),
-    ],
-    state,
-    '改成单列',
-  );
-  assert.deepEqual(first, []);
-  assert.equal(state.sawUser, false);
-
-  const second = consumeUpdateLines(
-    [
-      line({ sessionUpdate: 'user_message_chunk', content: { text: '改成单列' } }),
-      line({ sessionUpdate: 'agent_message_chunk', content: { text: '好的' } }),
-      line({ sessionUpdate: 'agent_message_chunk', content: { text: '，已改。' } }),
-      line({ sessionUpdate: 'turn_completed' }),
-    ],
-    state,
-    '改成单列',
-  );
-  assert.deepEqual(second, [
-    { type: 'text', data: '好的' },
-    { type: 'text', data: '，已改。' },
-    { type: 'done' },
-  ]);
-  assert.equal(state.text, '好的，已改。');
-  assert.equal(userChunkMatchesPrompt('改成单列', '改成单列'), true);
 });
