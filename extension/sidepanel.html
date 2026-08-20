@@ -119,31 +119,82 @@
                 <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
               </svg>
             </button>
-            <button class="pick-btn" id="pickBtn" type="button" title="选择页面元素">
-            <!-- solar CursorSquareLinear -->
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" aria-hidden="true">
-              <path
-                d="m14.859 16.5-2.461-2.461-.752.751c-.77.77-1.154 1.154-1.568 1.064-.413-.091-.602-.602-.978-1.623l-1.255-3.406c-.75-2.037-1.125-3.055-.6-3.58.525-.525 1.543-.15 3.58.6L14.231 9.1c1.021.376 1.532.565 1.623.978.09.414-.294.798-1.064 1.568l-.751.752 2.46 2.461c.256.255.383.382.442.524a.774.774 0 0 1 0 .593c-.059.142-.186.27-.441.524-.255.255-.382.382-.524.441a.774.774 0 0 1-.593 0c-.142-.059-.27-.186-.524-.441Z"
-                stroke="currentColor"
-                stroke-width="1.5"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-              <path
-                d="M2 12c0-4.714 0-7.071 1.464-8.536C4.93 2 7.286 2 12 2c4.714 0 7.071 0 8.535 1.464C22 4.93 22 7.286 22 12c0 4.714 0 7.071-1.465 8.535C19.072 22 16.714 22 12 22s-7.071 0-8.536-1.465C2 19.072 2 16.714 2 12Z"
-                stroke="currentColor"
-                stroke-width="1.5"
-              />
-            </svg>
-              <span id="pickLabel">选择以编辑</span>
-              <span class="pick-clear" id="clearPickBtn" hidden>
-                <!-- solar CloseCircleLinear -->
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true">
-                  <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.5" />
-                  <path d="m14.5 9.5-5 5m0-5 5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+            <div class="pick-group" id="pickGroup">
+              <button class="pick-btn" id="pickBtn" type="button" title="选择页面元素">
+                <!-- solar CursorSquareLinear -->
+                <svg class="pick-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" aria-hidden="true">
+                  <path
+                    d="m14.859 16.5-2.461-2.461-.752.751c-.77.77-1.154 1.154-1.568 1.064-.413-.091-.602-.602-.978-1.623l-1.255-3.406c-.75-2.037-1.125-3.055-.6-3.58.525-.525 1.543-.15 3.58.6L14.231 9.1c1.021.376 1.532.565 1.623.978.09.414-.294.798-1.064 1.568l-.751.752 2.46 2.461c.256.255.383.382.442.524a.774.774 0 0 1 0 .593c-.059.142-.186.27-.441.524-.255.255-.382.382-.524.441a.774.774 0 0 1-.593 0c-.142-.059-.27-.186-.524-.441Z"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  />
+                  <path
+                    d="M2 12c0-4.714 0-7.071 1.464-8.536C4.93 2 7.286 2 12 2c4.714 0 7.071 0 8.535 1.464C22 4.93 22 7.286 22 12c0 4.714 0 7.071-1.465 8.535C19.072 22 16.714 22 12 22s-7.071 0-8.536-1.465C2 19.072 2 16.714 2 12Z"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                  />
                 </svg>
-              </span>
-            </button>
+                <img class="pick-thumb" id="pickThumb" alt="" hidden />
+                <span id="pickLabel">选择元素</span>
+                <span class="pick-clear" id="clearPickBtn" hidden>
+                  <!-- solar CloseCircleLinear -->
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true">
+                    <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.5" />
+                    <path d="m14.5 9.5-5 5m0-5 5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                  </svg>
+                </span>
+              </button>
+              <button
+                class="pick-expand"
+                id="pickExpandBtn"
+                type="button"
+                title="更多选择方式"
+                aria-expanded="false"
+                aria-haspopup="menu"
+                aria-controls="pickMenu"
+              >
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true">
+                  <path d="m6 9 6 6 6-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </button>
+              <div class="pick-menu" id="pickMenu" hidden role="menu">
+                <button class="pick-menu-item" id="pickModeElement" type="button" role="menuitem">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" aria-hidden="true">
+                    <path
+                      d="m14.859 16.5-2.461-2.461-.752.751c-.77.77-1.154 1.154-1.568 1.064-.413-.091-.602-.602-.978-1.623l-1.255-3.406c-.75-2.037-1.125-3.055-.6-3.58.525-.525 1.543-.15 3.58.6L14.231 9.1c1.021.376 1.532.565 1.623.978.09.414-.294.798-1.064 1.568l-.751.752 2.46 2.461c.256.255.383.382.442.524a.774.774 0 0 1 0 .593c-.059.142-.186.27-.441.524-.255.255-.382.382-.524.441a.774.774 0 0 1-.593 0c-.142-.059-.27-.186-.524-.441Z"
+                      stroke="currentColor"
+                      stroke-width="1.5"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                    <path
+                      d="M2 12c0-4.714 0-7.071 1.464-8.536C4.93 2 7.286 2 12 2c4.714 0 7.071 0 8.535 1.464C22 4.93 22 7.286 22 12c0 4.714 0 7.071-1.465 8.535C19.072 22 16.714 22 12 22s-7.071 0-8.536-1.465C2 19.072 2 16.714 2 12Z"
+                      stroke="currentColor"
+                      stroke-width="1.5"
+                    />
+                  </svg>
+                  <span>选择元素</span>
+                </button>
+                <button class="pick-menu-item" id="pickModeAnnotate" type="button" role="menuitem">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" aria-hidden="true">
+                    <path
+                      d="M3 8c0-2.828 0-4.243.879-5.121C4.757 2 6.172 2 9 2h6c2.828 0 4.243 0 5.121.879C21 3.757 21 5.172 21 8v8c0 2.828 0 4.243-.879 5.121C19.243 22 17.828 22 15 22H9c-2.828 0-4.243 0-5.121-.879C3 20.243 3 18.828 3 16z"
+                      stroke="currentColor"
+                      stroke-width="1.5"
+                    />
+                    <path
+                      d="M16.5 8.5 8 17l-2 .5.5-2 8.5-8.5a1.414 1.414 0 0 1 2 2Z"
+                      stroke="currentColor"
+                      stroke-width="1.5"
+                      stroke-linejoin="round"
+                    />
+                  </svg>
+                  <span>截图标注</span>
+                </button>
+              </div>
+            </div>
           </div>
           <button class="send" id="sendBtn" type="submit" disabled>
             <!-- solar ArrowUpLinear -->

@@ -245,8 +245,8 @@ function overlayIgnore(el, event) {
   }
   for (const node of nodes) {
     if (!node) continue;
-    if (node.nodeType === 1 && node.closest && node.closest('[data-gcb-picker]')) return true;
-    if (node.host && node.host.closest && node.host.closest('[data-gcb-picker]')) return true;
+    if (node.nodeType === 1 && node.closest && node.closest('[data-gcb-picker], [data-gcb-annotate]')) return true;
+    if (node.host && node.host.closest && node.host.closest('[data-gcb-picker], [data-gcb-annotate]')) return true;
   }
   return false;
 }
@@ -300,6 +300,7 @@ function createOverlayRoot(html) {
 }
 
 function startPicker() {
+  if (annotateSession) stopAnnotator({ cancelled: true });
   if (overlaySession) stopOverlay({ cancelled: true });
 
   let resolve;
@@ -371,6 +372,483 @@ function startPicker() {
 
   attachOverlay({ root, onMove, onClick, onScroll, resolve });
   overlaySession.promise = promise;
+  return promise;
+}
+
+let annotateSession = null;
+const ANNOTATE_COLOR = '#fe4a23';
+
+function stopAnnotator(result) {
+  const session = annotateSession;
+  if (!session) return;
+  annotateSession = null;
+  session.cleanups.forEach((fn) => {
+    try {
+      fn();
+    } catch {}
+  });
+  session.root.remove();
+  document.documentElement.style.cursor = session.prevCursor;
+  document.documentElement.style.overflow = session.prevOverflow;
+  session.resolve(result);
+}
+
+function normRect(x1, y1, x2, y2) {
+  const x = Math.min(x1, x2);
+  const y = Math.min(y1, y2);
+  return { x, y, w: Math.abs(x2 - x1), h: Math.abs(y2 - y1) };
+}
+
+function pointerPoint(event) {
+  return { x: event.clientX, y: event.clientY };
+}
+
+function strokeMeaningful(stroke) {
+  if (!stroke) return false;
+  if (stroke.tool === 'rect') return stroke.w >= 8 && stroke.h >= 8;
+  if (stroke.tool === 'arrow') {
+    return Math.hypot(stroke.x2 - stroke.x1, stroke.y2 - stroke.y1) >= 12;
+  }
+  if (stroke.tool === 'pen') {
+    const pts = stroke.points || [];
+    if (pts.length < 2) return false;
+    let dist = 0;
+    for (let i = 1; i < pts.length; i += 1) {
+      dist += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+    }
+    return dist >= 4;
+  }
+  if (stroke.tool === 'text') return String(stroke.text || '').trim().length > 0;
+  return false;
+}
+
+function drawStroke(ctx, stroke) {
+  ctx.save();
+  ctx.strokeStyle = ANNOTATE_COLOR;
+  ctx.fillStyle = ANNOTATE_COLOR;
+  ctx.lineWidth = 2.5;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  if (stroke.tool === 'rect') {
+    ctx.strokeRect(stroke.x + 1.25, stroke.y + 1.25, Math.max(0, stroke.w - 2.5), Math.max(0, stroke.h - 2.5));
+  } else if (stroke.tool === 'arrow') {
+    const { x1, y1, x2, y2 } = stroke;
+    const angle = Math.atan2(y2 - y1, x2 - x1);
+    const head = 11;
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.moveTo(x2, y2);
+    ctx.lineTo(x2 - head * Math.cos(angle - Math.PI / 6), y2 - head * Math.sin(angle - Math.PI / 6));
+    ctx.moveTo(x2, y2);
+    ctx.lineTo(x2 - head * Math.cos(angle + Math.PI / 6), y2 - head * Math.sin(angle + Math.PI / 6));
+    ctx.stroke();
+  } else if (stroke.tool === 'pen' && stroke.points?.length) {
+    ctx.beginPath();
+    ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
+    for (let i = 1; i < stroke.points.length; i += 1) {
+      ctx.lineTo(stroke.points[i].x, stroke.points[i].y);
+    }
+    ctx.stroke();
+  } else if (stroke.tool === 'text' && stroke.text) {
+    const size = stroke.size || 16;
+    const lines = String(stroke.text).split('\n');
+    ctx.font = `600 ${size}px ui-sans-serif, system-ui, -apple-system, sans-serif`;
+    ctx.textBaseline = 'top';
+    ctx.lineJoin = 'round';
+    ctx.miterLimit = 2;
+    lines.forEach((line, index) => {
+      const top = stroke.y + index * size * 1.3;
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(255,255,255,0.92)';
+      ctx.strokeText(line, stroke.x, top);
+      ctx.fillStyle = ANNOTATE_COLOR;
+      ctx.fillText(line, stroke.x, top);
+    });
+  }
+  ctx.restore();
+}
+
+function exportAnnotatedCrop(image, sel, strokes) {
+  const viewW = window.innerWidth || 1;
+  const viewH = window.innerHeight || 1;
+  const scaleX = image.naturalWidth / viewW;
+  const scaleY = image.naturalHeight / viewH;
+  const pad = 8;
+  const sx = Math.max(0, (sel.x - pad) * scaleX);
+  const sy = Math.max(0, (sel.y - pad) * scaleY);
+  const sw = Math.max(1, Math.min(image.naturalWidth - sx, (sel.w + pad * 2) * scaleX));
+  const sh = Math.max(1, Math.min(image.naturalHeight - sy, (sel.h + pad * 2) * scaleY));
+  let outW = sw;
+  let outH = sh;
+  const maxSide = 1280;
+  if (Math.max(outW, outH) > maxSide) {
+    const scale = maxSide / Math.max(outW, outH);
+    outW = Math.max(1, Math.round(outW * scale));
+    outH = Math.max(1, Math.round(outH * scale));
+  } else {
+    outW = Math.max(1, Math.round(outW));
+    outH = Math.max(1, Math.round(outH));
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = outW;
+  canvas.height = outH;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+  ctx.drawImage(image, sx, sy, sw, sh, 0, 0, outW, outH);
+  ctx.setTransform(scaleX * (outW / sw), 0, 0, scaleY * (outH / sh), -sx * (outW / sw), -sy * (outH / sh));
+  strokes.forEach((stroke) => drawStroke(ctx, stroke));
+  return canvas.toDataURL('image/jpeg', 0.84);
+}
+
+function startAnnotator(screenshot) {
+  if (overlaySession) stopOverlay({ cancelled: true });
+  if (annotateSession) stopAnnotator({ cancelled: true });
+  if (!screenshot) return Promise.resolve({ cancelled: true, error: 'no screenshot' });
+
+  let resolve;
+  const promise = new Promise((r) => {
+    resolve = r;
+  });
+
+  const root = document.createElement('div');
+  root.id = 'gcb-annotate-root';
+  root.setAttribute('data-gcb-annotate', '1');
+  root.innerHTML =
+    '<img id="gcb-annotate-shot" alt="" />' +
+    '<canvas id="gcb-annotate-canvas"></canvas>' +
+    '<div id="gcb-annotate-marquee" hidden></div>' +
+    '<div id="gcb-annotate-hint">拖拽框选要标注的区域 · Esc 取消</div>' +
+    '<div id="gcb-annotate-toolbar" hidden>' +
+    '<button type="button" data-tool="rect" title="矩形" class="is-current">' +
+    '<svg viewBox="0 0 24 24" width="16" height="16" fill="none"><rect x="5" y="6" width="14" height="12" rx="1.5" stroke="currentColor" stroke-width="1.5"/></svg>' +
+    '</button>' +
+    '<button type="button" data-tool="arrow" title="箭头">' +
+    '<svg viewBox="0 0 24 24" width="16" height="16" fill="none"><path d="M5 19 17.5 6.5M17.5 6.5H10M17.5 6.5V14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>' +
+    '</button>' +
+    '<button type="button" data-tool="pen" title="画笔">' +
+    '<svg viewBox="0 0 24 24" width="16" height="16" fill="none"><path d="m16.5 6.5-9 9L6 18l2.5-1.5 9-9a1.414 1.414 0 0 0-2-2Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>' +
+    '</button>' +
+    '<button type="button" data-tool="text" title="文字">' +
+    '<svg viewBox="0 0 24 24" width="16" height="16" fill="none"><path d="M5 6h14M12 6v13M8 19h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>' +
+    '</button>' +
+    '<span class="gcb-annotate-sep"></span>' +
+    '<button type="button" data-action="undo" title="撤销">' +
+    '<svg viewBox="0 0 24 24" width="16" height="16" fill="none"><path d="M8 8H5V5M5.3 16.5A7.5 7.5 0 1 0 6 7.2L5 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>' +
+    '</button>' +
+    '<button type="button" data-action="done">完成</button>' +
+    '</div>';
+  document.documentElement.appendChild(root);
+
+  const shot = root.querySelector('#gcb-annotate-shot');
+  const canvas = root.querySelector('#gcb-annotate-canvas');
+  const marquee = root.querySelector('#gcb-annotate-marquee');
+  const hint = root.querySelector('#gcb-annotate-hint');
+  const toolbar = root.querySelector('#gcb-annotate-toolbar');
+  const ctx = canvas.getContext('2d');
+  const prevCursor = document.documentElement.style.cursor;
+  const prevOverflow = document.documentElement.style.overflow;
+  document.documentElement.style.cursor = 'crosshair';
+  document.documentElement.style.overflow = 'hidden';
+
+  let phase = 'select';
+  let tool = 'rect';
+  let sel = null;
+  let dragOrigin = null;
+  let drawing = false;
+  let draft = null;
+  let textEditor = null;
+  const strokes = [];
+  const cleanups = [];
+
+  function setTool(next) {
+    tool = next;
+    const cursor = next === 'text' ? 'text' : 'crosshair';
+    root.style.cursor = cursor;
+    document.documentElement.style.cursor = cursor;
+    toolbar.querySelectorAll('[data-tool]').forEach((node) => {
+      node.classList.toggle('is-current', node.dataset.tool === tool);
+    });
+  }
+
+  function resizeTextEditor() {
+    if (!textEditor) return;
+    const el = textEditor.el;
+    el.style.height = 'auto';
+    el.style.height = `${Math.max(28, el.scrollHeight)}px`;
+  }
+
+  function closeTextEditor({ commit } = {}) {
+    if (!textEditor) return;
+    const text = textEditor.el.value.replace(/\s+$/, '').replace(/^\s+/, '');
+    const { x, y } = textEditor;
+    textEditor.el.remove();
+    textEditor = null;
+    if (commit && text) {
+      strokes.push({ tool: 'text', x, y, text, size: 16 });
+      paintCanvas();
+    }
+  }
+
+  function openTextEditor(x, y) {
+    closeTextEditor({ commit: true });
+    const input = document.createElement('textarea');
+    input.id = 'gcb-annotate-text';
+    input.rows = 1;
+    input.placeholder = '输入文字';
+    input.setAttribute('data-gcb-annotate', '1');
+    input.style.left = `${Math.round(x)}px`;
+    input.style.top = `${Math.round(y)}px`;
+    root.appendChild(input);
+    textEditor = { el: input, x, y };
+    input.addEventListener('input', resizeTextEditor);
+    input.addEventListener('pointerdown', (event) => event.stopPropagation());
+    resizeTextEditor();
+    requestAnimationFrame(() => input.focus());
+  }
+
+  function sizeCanvas() {
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.max(1, Math.round(window.innerWidth * dpr));
+    canvas.height = Math.max(1, Math.round(window.innerHeight * dpr));
+    canvas.style.width = `${window.innerWidth}px`;
+    canvas.style.height = `${window.innerHeight}px`;
+    if (ctx) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  function paintMarquee() {
+    if (!sel || sel.w < 2 || sel.h < 2) {
+      marquee.hidden = true;
+      return;
+    }
+    marquee.hidden = false;
+    marquee.style.left = `${Math.round(sel.x)}px`;
+    marquee.style.top = `${Math.round(sel.y)}px`;
+    marquee.style.width = `${Math.round(sel.w)}px`;
+    marquee.style.height = `${Math.round(sel.h)}px`;
+  }
+
+  function paintCanvas() {
+    if (!ctx) return;
+    ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+    strokes.forEach((stroke) => drawStroke(ctx, stroke));
+    if (draft) drawStroke(ctx, draft);
+  }
+
+  function placeToolbar() {
+    if (!sel) return;
+    const tw = toolbar.offsetWidth || 260;
+    const th = toolbar.offsetHeight || 40;
+    let left = sel.x + sel.w / 2 - tw / 2;
+    let top = sel.y + sel.h + 10;
+    if (top + th > window.innerHeight - 8) top = sel.y - th - 10;
+    if (top < 8) top = 8;
+    left = Math.max(8, Math.min(left, window.innerWidth - tw - 8));
+    toolbar.style.left = `${Math.round(left)}px`;
+    toolbar.style.top = `${Math.round(top)}px`;
+  }
+
+  function enterDraw() {
+    phase = 'draw';
+    hint.textContent = '画框、箭头、笔迹或点一下写字 · 完成';
+    toolbar.hidden = false;
+    placeToolbar();
+    paintCanvas();
+  }
+
+  function finish() {
+    closeTextEditor({ commit: true });
+    if (!sel || !shot.naturalWidth) {
+      stopAnnotator({ cancelled: true, error: 'no crop' });
+      return;
+    }
+    const screenshotOut = exportAnnotatedCrop(shot, sel, strokes);
+    if (!screenshotOut) {
+      stopAnnotator({ cancelled: true, error: 'export failed' });
+      return;
+    }
+    const notes = strokes
+      .filter((stroke) => stroke.tool === 'text' && stroke.text)
+      .map((stroke) => stroke.text);
+    stopAnnotator({
+      screenshot: screenshotOut,
+      notes,
+      rect: {
+        x: Math.round(sel.x),
+        y: Math.round(sel.y),
+        w: Math.round(sel.w),
+        h: Math.round(sel.h),
+      },
+      url: location.href,
+      title: document.title || '',
+      annotatedAt: new Date().toISOString(),
+    });
+  }
+
+  function onDown(event) {
+    if (event.button !== 0) return;
+    if (event.target.closest('#gcb-annotate-toolbar, #gcb-annotate-text')) return;
+    event.preventDefault();
+    const pt = pointerPoint(event);
+    if (phase === 'select') {
+      try {
+        root.setPointerCapture(event.pointerId);
+      } catch {}
+      dragOrigin = pt;
+      sel = { x: pt.x, y: pt.y, w: 0, h: 0 };
+      paintMarquee();
+      return;
+    }
+    if (tool === 'text') {
+      closeTextEditor({ commit: true });
+      openTextEditor(pt.x, pt.y);
+      return;
+    }
+    closeTextEditor({ commit: true });
+    try {
+      root.setPointerCapture(event.pointerId);
+    } catch {}
+    drawing = true;
+    if (tool === 'rect') draft = { tool: 'rect', ax: pt.x, ay: pt.y, x: pt.x, y: pt.y, w: 0, h: 0 };
+    else if (tool === 'arrow') draft = { tool: 'arrow', x1: pt.x, y1: pt.y, x2: pt.x, y2: pt.y };
+    else draft = { tool: 'pen', points: [pt] };
+    paintCanvas();
+  }
+
+  function onMove(event) {
+    const pt = pointerPoint(event);
+    if (phase === 'select' && dragOrigin) {
+      sel = normRect(dragOrigin.x, dragOrigin.y, pt.x, pt.y);
+      paintMarquee();
+      return;
+    }
+    if (!drawing || !draft) return;
+    if (draft.tool === 'rect') {
+      const next = normRect(draft.ax, draft.ay, pt.x, pt.y);
+      draft.x = next.x;
+      draft.y = next.y;
+      draft.w = next.w;
+      draft.h = next.h;
+    } else if (draft.tool === 'arrow') {
+      draft.x2 = pt.x;
+      draft.y2 = pt.y;
+    } else if (draft.tool === 'pen') {
+      draft.points.push(pt);
+    }
+    paintCanvas();
+  }
+
+  function onUp(event) {
+    if (phase === 'select' && dragOrigin) {
+      dragOrigin = null;
+      if (sel && sel.w >= 16 && sel.h >= 16) enterDraw();
+      else {
+        sel = null;
+        paintMarquee();
+      }
+      return;
+    }
+    if (!drawing) return;
+    drawing = false;
+    if (strokeMeaningful(draft)) {
+      if (draft.tool === 'rect') {
+        strokes.push({ tool: 'rect', x: draft.x, y: draft.y, w: draft.w, h: draft.h });
+      } else {
+        strokes.push(draft);
+      }
+    }
+    draft = null;
+    paintCanvas();
+  }
+
+  function onKey(event) {
+    if (textEditor) {
+      if (event.key === 'Escape' || event.code === 'Escape' || event.keyCode === 27) {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        closeTextEditor({ commit: false });
+        return;
+      }
+      if ((event.key === 'Enter' || event.code === 'Enter') && !event.shiftKey) {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        closeTextEditor({ commit: true });
+      }
+      return;
+    }
+    if (event.key === 'Escape' || event.code === 'Escape' || event.keyCode === 27) {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      stopAnnotator({ cancelled: true });
+      return;
+    }
+    if ((event.key === 'Enter' || event.code === 'Enter') && phase === 'draw') {
+      event.preventDefault();
+      finish();
+    }
+  }
+
+  function onToolbarClick(event) {
+    const btn = event.target.closest('button');
+    if (!btn) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (btn.dataset.tool) {
+      closeTextEditor({ commit: true });
+      setTool(btn.dataset.tool);
+      return;
+    }
+    if (btn.dataset.action === 'undo') {
+      if (textEditor) {
+        closeTextEditor({ commit: false });
+        return;
+      }
+      strokes.pop();
+      paintCanvas();
+      return;
+    }
+    if (btn.dataset.action === 'done') finish();
+  }
+
+  sizeCanvas();
+  shot.onerror = () => stopAnnotator({ cancelled: true, error: 'screenshot load failed' });
+  shot.src = screenshot;
+  root.addEventListener('pointerdown', onDown);
+  root.addEventListener('pointermove', onMove);
+  root.addEventListener('pointerup', onUp);
+  root.addEventListener('pointercancel', onUp);
+  root.addEventListener('click', (event) => {
+    if (event.target.closest('#gcb-annotate-toolbar, #gcb-annotate-text')) return;
+    event.preventDefault();
+    event.stopPropagation();
+  }, true);
+  toolbar.addEventListener('click', onToolbarClick);
+  document.addEventListener('keydown', onKey, true);
+  window.addEventListener('keydown', onKey, true);
+  const onWheel = (event) => event.preventDefault();
+  root.addEventListener('wheel', onWheel, { passive: false });
+  const onResize = () => {
+    sizeCanvas();
+    paintCanvas();
+    placeToolbar();
+  };
+  window.addEventListener('resize', onResize);
+  cleanups.push(() => {
+    root.removeEventListener('pointerdown', onDown);
+    root.removeEventListener('pointermove', onMove);
+    root.removeEventListener('pointerup', onUp);
+    root.removeEventListener('pointercancel', onUp);
+    toolbar.removeEventListener('click', onToolbarClick);
+    document.removeEventListener('keydown', onKey, true);
+    window.removeEventListener('keydown', onKey, true);
+    root.removeEventListener('wheel', onWheel);
+    window.removeEventListener('resize', onResize);
+  });
+
+  annotateSession = { resolve, root, cleanups, prevCursor, prevOverflow };
   return promise;
 }
 
@@ -1146,6 +1624,7 @@ function showPlaceGhost(el, position, component, place) {
 }
 
 function startPlacer(component) {
+  if (annotateSession) stopAnnotator({ cancelled: true });
   if (overlaySession) stopOverlay({ cancelled: true });
   const block = component && component.name ? component : { name: 'Forge 组件' };
 
@@ -1889,7 +2368,7 @@ async function handleDomCommand(command, args) {
   }
 }
 
-window.__gcbContentVersion = '0.3.29';
+window.__gcbContentVersion = '0.3.31';
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'ping') {
@@ -1912,6 +2391,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
   if (msg.type === 'picker-start') {
     startPicker()
+      .then((result) => sendResponse(result))
+      .catch((err) => sendResponse({ error: err.message || String(err) }));
+    return true;
+  }
+
+  if (msg.type === 'annotate-start') {
+    startAnnotator(msg.screenshot)
       .then((result) => sendResponse(result))
       .catch((err) => sendResponse({ error: err.message || String(err) }));
     return true;
@@ -1940,6 +2426,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
   if (msg.type === 'picker-cancel' || msg.type === 'place-cancel') {
     stopOverlay({ cancelled: true });
+    stopAnnotator({ cancelled: true });
     dismissPlaceGhost();
     sendResponse({ cancelled: true });
     return true;

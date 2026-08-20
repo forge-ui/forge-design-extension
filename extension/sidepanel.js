@@ -9,6 +9,12 @@ const sessionList = document.getElementById('sessionList');
 const chatTitle = document.getElementById('chatTitle');
 const pickBtn = document.getElementById('pickBtn');
 const pickLabel = document.getElementById('pickLabel');
+const pickThumb = document.getElementById('pickThumb');
+const pickGroup = document.getElementById('pickGroup');
+const pickExpandBtn = document.getElementById('pickExpandBtn');
+const pickMenu = document.getElementById('pickMenu');
+const pickModeElement = document.getElementById('pickModeElement');
+const pickModeAnnotate = document.getElementById('pickModeAnnotate');
 const clearPickBtn = document.getElementById('clearPickBtn');
 const sessionEmpty = document.getElementById('sessionEmpty');
 const sessionSearch = document.getElementById('sessionSearch');
@@ -396,6 +402,9 @@ let currentCwd = '';
 let current = { id: null, cwd: null, title: '新对话', messages: [] };
 let includePick = false;
 let lastPick = null;
+let includeAnnotate = false;
+let lastAnnotate = null;
+let annotatePending = false;
 let lastPlace = null;
 let placing = null;
 let pendingPlaces = [];
@@ -636,17 +645,97 @@ function flushStreamingPaint() {
 }
 
 function renderPickChip() {
-  const active = !!(includePick && lastPick?.selector);
+  const annotateOn = !!(includeAnnotate && lastAnnotate?.screenshot);
+  const pickOn = !!(includePick && lastPick?.selector);
+  const active = annotateOn || pickOn || annotatePending;
   pickBtn.classList.toggle('active', active);
-  if (!active) {
-    pickLabel.textContent = '选择以编辑';
+  pickGroup.classList.toggle('active', active);
+  pickGroup.classList.toggle('has-thumb', annotateOn);
+  pickModeElement.classList.toggle('is-current', pickOn || (!annotateOn && !annotatePending));
+  pickModeAnnotate.classList.toggle('is-current', annotateOn || annotatePending);
+  if (annotateOn) {
+    pickThumb.hidden = false;
+    pickThumb.src = lastAnnotate.screenshot;
+  } else {
+    pickThumb.hidden = true;
+    pickThumb.removeAttribute('src');
+  }
+  if (annotatePending && !annotateOn) {
+    pickLabel.textContent = '框选中…';
     clearPickBtn.hidden = true;
+    return;
+  }
+  if (!active) {
+    pickLabel.textContent = '选择元素';
+    clearPickBtn.hidden = true;
+    return;
+  }
+  if (annotateOn) {
+    pickLabel.textContent = '截图标注';
+    clearPickBtn.hidden = false;
     return;
   }
   pickLabel.textContent = [lastPick.tag, lastPick.text || lastPick.selector]
     .filter(Boolean)
     .join(' · ');
   clearPickBtn.hidden = false;
+}
+
+function closePickMenu() {
+  pickMenu.hidden = true;
+  pickExpandBtn.setAttribute('aria-expanded', 'false');
+  pickGroup.classList.remove('open');
+}
+
+function clearPageTarget() {
+  includePick = false;
+  lastPick = null;
+  includeAnnotate = false;
+  lastAnnotate = null;
+  annotatePending = false;
+  renderPickChip();
+}
+
+function applyAnnotate(annotate) {
+  if (!annotate?.screenshot) return;
+  lastAnnotate = annotate;
+  includeAnnotate = true;
+  includePick = false;
+  lastPick = null;
+  annotatePending = false;
+  renderPickChip();
+}
+
+function startPick() {
+  includeAnnotate = false;
+  lastAnnotate = null;
+  annotatePending = false;
+  renderPickChip();
+  chrome.runtime.sendMessage({ type: 'startPick' }, () => {
+    void chrome.runtime.lastError;
+  });
+}
+
+function startAnnotate() {
+  includePick = false;
+  lastPick = null;
+  annotatePending = true;
+  renderPickChip();
+  chrome.runtime.sendMessage({ type: 'startAnnotate' }, (res) => {
+    void chrome.runtime.lastError;
+    annotatePending = false;
+    if (res?.error) {
+      renderPickChip();
+      current.messages.push({ role: 'assistant', text: `无法开始截图标注：${res.error}` });
+      renderMessages();
+      return;
+    }
+    if (res?.screenshot) {
+      applyAnnotate(res);
+      return;
+    }
+    renderPickChip();
+  });
 }
 
 const KIT_HREF = 'vendor/forge-kit.css';
@@ -916,6 +1005,10 @@ function startPlace(block, variant) {
   closeMenus();
   setPaletteOpen(false);
   placing = component;
+  includeAnnotate = false;
+  lastAnnotate = null;
+  annotatePending = false;
+  renderPickChip();
   renderPlaceBanner();
   chrome.runtime.sendMessage({ type: 'startPlace', component }, (result) => {
     void chrome.runtime.lastError;
@@ -1039,6 +1132,9 @@ async function loadConfig() {
   currentCwd = data.currentCwd || '';
   lastPick = null;
   includePick = false;
+  includeAnnotate = false;
+  lastAnnotate = null;
+  annotatePending = false;
   renderPickChip();
   try {
     const boot = await fetch(apiUrl('/token')).then((r) => r.json());
@@ -1297,23 +1393,34 @@ async function sendMessage(text, options = {}) {
   resizeInput();
   try {
     // DOM-first: never full-page shot. Pick/place may attach a small element crop.
+    // Screenshot annotate is an explicit user crop + marks, not a page dump.
     const page = await getPageContext({ screenshot: false });
     let pick = includePick && lastPick?.selector ? lastPick : null;
     let screenshot = null;
-    const placePick =
-      options.places?.[0]?.pick ||
-      options.place?.pick ||
-      options.place?.places?.[0]?.pick ||
-      null;
-    const cropSource = pick || (options.place || options.places?.length ? placePick : null);
-    if (cropSource?.selector) {
-      const cropped = await getElementCrop(cropSource);
-      if (cropped.pick && pick) {
-        pick = cropped.pick;
-        lastPick = pick;
-        renderPickChip();
+    let screenshotKind = null;
+    let screenshotNotes = null;
+    const placingNow = !!(options.place || options.places?.length);
+    if (!placingNow && includeAnnotate && lastAnnotate?.screenshot) {
+      screenshot = lastAnnotate.screenshot;
+      screenshotKind = 'annotate';
+      screenshotNotes = Array.isArray(lastAnnotate.notes) ? lastAnnotate.notes : null;
+      pick = null;
+    } else {
+      const placePick =
+        options.places?.[0]?.pick ||
+        options.place?.pick ||
+        options.place?.places?.[0]?.pick ||
+        null;
+      const cropSource = pick || (options.place || options.places?.length ? placePick : null);
+      if (cropSource?.selector) {
+        const cropped = await getElementCrop(cropSource);
+        if (cropped.pick && pick) {
+          pick = cropped.pick;
+          lastPick = pick;
+          renderPickChip();
+        }
+        screenshot = cropped.screenshot || null;
       }
-      screenshot = cropped.screenshot || null;
     }
     const pathname = current.id ? `/sessions/${current.id}/messages` : '/sessions';
     const res = await fetch(apiUrl(pathname), {
@@ -1328,6 +1435,8 @@ async function sendMessage(text, options = {}) {
         cwd: current.cwd || currentCwd,
         page: { url: page.url || '', title: page.title || '' },
         screenshot,
+        screenshotKind,
+        screenshotNotes,
         pick,
         place: options.place || null,
         places: options.places || null,
@@ -1409,6 +1518,7 @@ function closeMenus() {
   menu.hidden = true;
   moreMenu.hidden = true;
   setPaletteOpen(false);
+  closePickMenu();
 }
 
 function syncMoreMenu() {
@@ -1420,7 +1530,10 @@ async function openSessionInTerminal(sessionId) {
   if (!sessionId) return;
   try {
     await api(`/sessions/${sessionId}/open`, { method: 'POST', body: '{}' });
-  } catch {}
+  } catch (err) {
+    current.messages.push({ role: 'assistant', text: `无法打开终端：${err.message}` });
+    renderMessages();
+  }
 }
 
 async function deleteLocalSession(session) {
@@ -1463,11 +1576,43 @@ document.getElementById('newChatBtn').addEventListener('click', () => {
 });
 
 pickBtn.addEventListener('click', (event) => {
-  if (event.target === clearPickBtn) return;
+  if (clearPickBtn.contains(event.target)) return;
+  closePickMenu();
   if (placing || pendingPlaces.length) cancelPlace();
-  chrome.runtime.sendMessage({ type: 'startPick' }, () => {
-    void chrome.runtime.lastError;
-  });
+  if (includeAnnotate && lastAnnotate?.screenshot) {
+    startAnnotate();
+    return;
+  }
+  startPick();
+});
+
+pickExpandBtn.addEventListener('click', (event) => {
+  event.stopPropagation();
+  const opening = pickMenu.hidden;
+  menu.hidden = true;
+  moreMenu.hidden = true;
+  setPaletteOpen(false);
+  if (!opening) {
+    closePickMenu();
+    return;
+  }
+  pickMenu.hidden = false;
+  pickExpandBtn.setAttribute('aria-expanded', 'true');
+  pickGroup.classList.add('open');
+});
+
+pickModeElement.addEventListener('click', (event) => {
+  event.stopPropagation();
+  closePickMenu();
+  if (placing || pendingPlaces.length) cancelPlace();
+  startPick();
+});
+
+pickModeAnnotate.addEventListener('click', (event) => {
+  event.stopPropagation();
+  closePickMenu();
+  if (placing || pendingPlaces.length) cancelPlace();
+  startAnnotate();
 });
 
 paletteBtn.addEventListener('click', (event) => {
@@ -1495,9 +1640,7 @@ document.getElementById('commitPlaceBtn').addEventListener('click', commitPlace)
 clearPickBtn.addEventListener('click', (event) => {
   event.preventDefault();
   event.stopPropagation();
-  includePick = false;
-  lastPick = null;
-  renderPickChip();
+  clearPageTarget();
 });
 
 async function refreshBridgeSwitch() {
@@ -1591,11 +1734,17 @@ input.addEventListener('keydown', (event) => {
 
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape' && event.code !== 'Escape') return;
+  if (!pickMenu.hidden) {
+    closePickMenu();
+    return;
+  }
   if (!palette.hidden) {
     setPaletteOpen(false);
     return;
   }
   if (placing || pendingPlaces.length) cancelPlace();
+  annotatePending = false;
+  renderPickChip();
   chrome.runtime.sendMessage({ type: 'cancelPick' }, () => {
     void chrome.runtime.lastError;
   });
@@ -1611,13 +1760,22 @@ document.addEventListener('click', (event) => {
   if (!palette.hidden && !palette.contains(event.target) && !paletteBtn.contains(event.target)) {
     setPaletteOpen(false);
   }
+  if (!pickMenu.hidden && !pickGroup.contains(event.target)) {
+    closePickMenu();
+  }
 });
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === 'lastPick') {
     lastPick = msg.pick;
     includePick = true;
+    includeAnnotate = false;
+    lastAnnotate = null;
+    annotatePending = false;
     renderPickChip();
+  }
+  if (msg.type === 'lastAnnotate') {
+    applyAnnotate(msg.annotate);
   }
   if (msg.type === 'lastPlace') {
     lastPlace = msg.place;

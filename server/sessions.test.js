@@ -46,6 +46,23 @@ test('stripInjectedContext keeps only the user sentence after last-pick context'
   assert.equal(extractUserText(dumped), '这里没有横向占满，导致竖向超出了');
 });
 
+test('buildGrokContext describes an annotated screenshot without DOM pick', () => {
+  const ctx = buildGrokContext({
+    page: { url: 'http://127.0.0.1:3100/x', title: 't' },
+    screenshotPath: '/tmp/mark.jpg',
+    screenshotKind: 'annotate',
+    screenshotNotes: ['按钮改大', '间距不对'],
+  });
+  assert.match(ctx, /annotated screenshot: \/tmp\/mark\.jpg/);
+  assert.match(ctx, /annotation labels: 按钮改大 \| 间距不对/);
+  assert.match(ctx, /按红框、箭头、笔迹和文字/);
+  assert.doesNotMatch(ctx, /element crop/);
+  assert.equal(
+    stripInjectedContext(`${ctx}\n\n把红框里的按钮改大`),
+    '把红框里的按钮改大',
+  );
+});
+
 test('buildGrokPrompt still concatenates context for tests, context is separate', () => {
   const ctx = buildGrokContext({
     page: { url: 'http://127.0.0.1:3100/x', title: 't' },

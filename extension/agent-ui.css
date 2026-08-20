@@ -128,6 +128,129 @@
   white-space: nowrap;
 }
 
+#gcb-annotate-root {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483646;
+  pointer-events: auto;
+  cursor: crosshair;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#gcb-annotate-shot,
+#gcb-annotate-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+#gcb-annotate-shot {
+  object-fit: fill;
+}
+
+#gcb-annotate-marquee {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1.5px solid #fff;
+  box-shadow: 0 0 0 1px #000a19, 0 0 0 9999px rgba(0, 10, 25, 0.42);
+  pointer-events: none;
+}
+
+#gcb-annotate-hint {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  pointer-events: none;
+  font: 12px/1.3 ui-sans-serif, system-ui, -apple-system, sans-serif;
+  color: #f8fafc;
+  background: #0f172a;
+  border: 1px solid #000a19;
+  border-radius: 6px;
+  padding: 3px 8px;
+  white-space: nowrap;
+}
+
+#gcb-annotate-toolbar {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  background: #fff;
+  border: 1px solid #e1e1e1;
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 10, 25, 0.12);
+  pointer-events: auto;
+  cursor: default;
+}
+
+#gcb-annotate-toolbar[hidden] {
+  display: none !important;
+}
+
+#gcb-annotate-toolbar button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 32px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #4f4f4f;
+  font: 12px/1 ui-sans-serif, system-ui, -apple-system, sans-serif;
+  cursor: pointer;
+}
+
+#gcb-annotate-toolbar button:hover,
+#gcb-annotate-toolbar button.is-current {
+  background: #fafafa;
+  color: #000a19;
+}
+
+#gcb-annotate-toolbar button[data-action="done"] {
+  background: #000a19;
+  color: #fff;
+  padding: 0 10px;
+}
+
+#gcb-annotate-toolbar button[data-action="done"]:hover {
+  filter: brightness(1.08);
+}
+
+#gcb-annotate-toolbar .gcb-annotate-sep {
+  width: 1px;
+  height: 18px;
+  background: #e1e1e1;
+  margin: 0 2px;
+}
+
+#gcb-annotate-text {
+  position: absolute;
+  z-index: 2;
+  min-width: 120px;
+  max-width: min(360px, 70vw);
+  margin: 0;
+  padding: 4px 6px;
+  border: 1.5px solid #fe4a23;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.94);
+  color: #fe4a23;
+  font: 600 16px/1.3 ui-sans-serif, system-ui, -apple-system, sans-serif;
+  resize: none;
+  outline: none;
+  overflow: hidden;
+  box-shadow: 0 4px 16px rgba(0, 10, 25, 0.12);
+  cursor: text;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 #gcb-place-line {
   position: fixed;
   display: none;

@@ -350,6 +350,42 @@ async function startPickerOnUserTab() {
   }
 }
 
+async function startAnnotateOnUserTab() {
+  const tab = await getUserFacingTab();
+  if (!tab?.id) return { error: 'No active tab' };
+  if (isRestrictedUrl(tab.url)) {
+    return { error: 'Cannot annotate on this page (chrome:// or similar)' };
+  }
+  const ok = await ensureContentScript(tab.id, { agentUi: false });
+  if (!ok) return { error: 'Cannot inject annotator on this page' };
+  try {
+    await chrome.tabs.sendMessage(tab.id, { type: 'picker-cancel' });
+  } catch {}
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  let screenshot = null;
+  try {
+    screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, {
+      format: 'jpeg',
+      quality: 84,
+    });
+  } catch (err) {
+    return { error: err.message || 'Screenshot failed' };
+  }
+  if (!screenshot) return { error: 'Screenshot failed' };
+  try {
+    const result = await chrome.tabs.sendMessage(tab.id, {
+      type: 'annotate-start',
+      screenshot,
+    });
+    if (result?.screenshot) {
+      chrome.runtime.sendMessage({ type: 'lastAnnotate', annotate: result }).catch(() => {});
+    }
+    return { tabId: tab.id, url: tab.url, ...result };
+  } catch (err) {
+    return { error: err.message || 'Annotate failed' };
+  }
+}
+
 async function startPlaceOnUserTab(component) {
   const tab = await getUserFacingTab();
   if (!tab?.id) return { error: 'No active tab' };
@@ -986,6 +1022,11 @@ async function handleCommand(command, args) {
         return startPickerOnUserTab();
       }
 
+      case 'start-annotate':
+      case 'startAnnotate': {
+        return startAnnotateOnUserTab();
+      }
+
       case 'start-place':
       case 'startPlace': {
         return startPlaceOnUserTab(args.component || args);
@@ -1131,6 +1172,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg.type === 'startPick') {
     startPickerOnUserTab().then(sendResponse);
+    return true;
+  }
+
+  if (msg.type === 'startAnnotate') {
+    startAnnotateOnUserTab().then(sendResponse);
     return true;
   }
 

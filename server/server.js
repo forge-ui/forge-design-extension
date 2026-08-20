@@ -208,6 +208,8 @@ async function handleGrokTurn(req, res, { session } = {}) {
   const rules = buildGrokContext({
     page: payload.page,
     screenshotPath,
+    screenshotKind: payload.screenshotKind || null,
+    screenshotNotes: payload.screenshotNotes || null,
     pick: payload.pick,
     place: payload.place,
     places,

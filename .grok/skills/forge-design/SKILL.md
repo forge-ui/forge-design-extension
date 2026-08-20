@@ -11,7 +11,7 @@ Use `scripts/bridge.sh` only when you need the live page (last pick, last place,
 
 ## When to use the bridge
 
-- The user selected something with **选择以编辑**, placed a block from the component palette, or asks to change a specific component on the current page.
+- The user selected something with **选择元素** or **截图标注**, placed a block from the component palette, or asks to change a specific component on the current page.
 - You need the current URL, title, last-pick selector, last-place target, or a page snapshot to understand the UI.
 - Do not treat this as a generic browser agent. Do not automate posting, following, shopping, or account changes.
 
@@ -20,7 +20,7 @@ Use `scripts/bridge.sh` only when you need the live page (last pick, last place,
 1. Run `scripts/bridge.sh health`. If `extensionConnected` is false, ask the user to start the local bridge or reload the extension.
 2. Run `scripts/bridge.sh last-place`. If `places` has 2+ items (or `place` exists) and `placedAt` is within the last 30 minutes, the user confirmed 写入源码. Write **all** numbered components in that order in one pass; do not only write the first. Prefer this over last-pick. Do not write source from a page preview that was cancelled.
 3. Otherwise run `scripts/bridge.sh last-pick`. If `pick` exists and `pickedAt` is within the last 30 minutes, that is the target. Use `selector`, `text`, `url`, and `testid`.
-4. If there is no recent pick or place, ask the user to click **选择以编辑** or the **+** palette, then read again. You may `scripts/bridge.sh snapshot 80` on the current page when they already said to inspect it.
+4. If there is no recent pick or place, ask the user to click **选择元素** or **截图标注**, or the **+** palette, then read again. You may `scripts/bridge.sh snapshot 80` on the current page when they already said to inspect it. If the prompt includes `annotated screenshot`, follow the red boxes / arrows / pen marks / written labels instead of guessing a selector.
 5. Prefer stable `id`, `data-testid`, `aria-label`, or role selectors.
 6. After writing placed components, snapshot again before claiming it worked. For a numbered multi-place, write the whole batch in one pass.
 

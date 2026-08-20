@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -36,8 +36,9 @@ function flattenContent(content) {
 }
 
 const INJECTED_CONTEXT_RE =
-  /用户当前正在看这个 Chrome 页面：|用户选中了这个元素|用户要把一个 Forge 组件|用户要把多个 Forge 组件|element crop \(optional visual\):|截图是选中元素附近的小图/;
+  /用户当前正在看这个 Chrome 页面：|用户选中了这个元素|用户要把一个 Forge 组件|用户要把多个 Forge 组件|用户框选了页面区域|element crop \(optional visual\):|annotated screenshot:|截图是选中元素附近的小图|按红框、箭头、笔迹和文字/;
 const CROP_HINT = '截图是选中元素附近的小图，不是整页。';
+const ANNOTATE_HINT = '按红框、箭头、笔迹和文字理解要改的位置。';
 const CONTINUATION_RE = /^This session is being continued from a previous conversation/i;
 
 export function looksLikeInjectedContext(text) {
@@ -47,9 +48,9 @@ export function looksLikeInjectedContext(text) {
 export function stripInjectedContext(text) {
   const raw = String(text || '').trim();
   if (!raw || !looksLikeInjectedContext(raw)) return raw;
-  const cropAt = raw.lastIndexOf(CROP_HINT);
-  if (cropAt >= 0) {
-    const lineEnd = raw.indexOf('\n', cropAt);
+  const hintAt = Math.max(raw.lastIndexOf(CROP_HINT), raw.lastIndexOf(ANNOTATE_HINT));
+  if (hintAt >= 0) {
+    const lineEnd = raw.indexOf('\n', hintAt);
     const rest = (lineEnd >= 0 ? raw.slice(lineEnd + 1) : '').trim();
     if (rest) return rest;
   }
@@ -537,7 +538,7 @@ function cryptoRandom() {
   return Math.random().toString(36).slice(2, 8);
 }
 
-export function buildGrokContext({ page, screenshotPath, pick, place, places }) {
+export function buildGrokContext({ page, screenshotPath, screenshotKind, screenshotNotes, pick, place, places }) {
   const parts = [];
   if (page?.url) {
     parts.push('用户当前正在看这个 Chrome 页面：');
@@ -667,90 +668,34 @@ export function buildGrokContext({ page, screenshotPath, pick, place, places }) 
     }
   }
   if (screenshotPath) {
-    parts.push(`element crop (optional visual): ${screenshotPath}`);
-    parts.push(
-      '截图是选中元素附近的小图，不是整页。改颜色/间距可看；改文案/结构/写源码优先用上面的 DOM，不必先 read_file。'
-    );
+    if (screenshotKind === 'annotate') {
+      parts.push(`annotated screenshot: ${screenshotPath}`);
+      const notes = Array.isArray(screenshotNotes)
+        ? screenshotNotes.map((item) => String(item || '').trim()).filter(Boolean)
+        : [];
+      if (notes.length) parts.push(`annotation labels: ${notes.join(' | ')}`);
+      parts.push(
+        '用户框选了页面区域并做了标注。按红框、箭头、笔迹和文字理解要改的位置；图上没有 DOM selector。改颜色/间距/布局可看图。'
+      );
+    } else {
+      parts.push(`element crop (optional visual): ${screenshotPath}`);
+      parts.push(
+        '截图是选中元素附近的小图，不是整页。改颜色/间距可看；改文案/结构/写源码优先用上面的 DOM，不必先 read_file。'
+      );
+    }
   }
   return parts.join('\n');
 }
 
-export function buildGrokPrompt({ text, page, screenshotPath, pick, place, places }) {
-  const context = buildGrokContext({ page, screenshotPath, pick, place, places });
+export function buildGrokPrompt({ text, page, screenshotPath, screenshotKind, screenshotNotes, pick, place, places }) {
+  const context = buildGrokContext({ page, screenshotPath, screenshotKind, screenshotNotes, pick, place, places });
   if (!context) return text;
   return `${context}\n\n${text}`;
-}
-
-function readActiveSessions() {
-  const file = path.join(grokHome(), 'active_sessions.json');
-  if (!fs.existsSync(file)) return [];
-  try {
-    const rows = JSON.parse(fs.readFileSync(file, 'utf8'));
-    return Array.isArray(rows) ? rows : [];
-  } catch {
-    return [];
-  }
-}
-
-function processLooksLikeGrok(pid) {
-  try {
-    const comm = execFileSync('ps', ['-p', String(pid), '-o', 'comm='], {
-      encoding: 'utf8',
-      timeout: 1000,
-    }).trim();
-    return /grok/i.test(comm);
-  } catch {
-    return false;
-  }
-}
-
-function ttyForPid(pid) {
-  try {
-    const tty = execFileSync('ps', ['-p', String(pid), '-o', 'tty='], {
-      encoding: 'utf8',
-      timeout: 1000,
-    }).trim();
-    if (!tty || tty === '??' || tty === '-') return null;
-    const dev = tty.startsWith('/') ? tty : path.join('/dev', tty);
-    return fs.existsSync(dev) ? dev : null;
-  } catch {
-    return null;
-  }
-}
-
-function pidAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-export function findLiveTui(sessionId) {
-  if (!sessionId) return null;
-  const hit = readActiveSessions().find((row) => row.session_id === sessionId || row.id === sessionId);
-  if (!hit?.pid) return null;
-  const pid = Number(hit.pid);
-  if (!Number.isFinite(pid) || !pidAlive(pid) || !processLooksLikeGrok(pid)) return null;
-  const tty = ttyForPid(pid);
-  if (!tty) return null;
-  return { pid, tty, cwd: hit.cwd || null, sessionId };
 }
 
 export function openSessionInTerminal({ sessionId, cwd }) {
   if (!sessionId) return Promise.reject(new Error('sessionId required'));
   const workdir = cwd || os.homedir();
-  const live = findLiveTui(sessionId);
-  if (live) {
-    return Promise.resolve({
-      ok: true,
-      sessionId,
-      cwd: workdir,
-      alreadyOpen: true,
-      pid: live.pid,
-    });
-  }
   const script = `cd ${shellSingleQuote(workdir)} && exec ${shellSingleQuote(resolveGrokBin())} --resume ${shellSingleQuote(sessionId)}`;
   return new Promise((resolve, reject) => {
     const child = spawn('osascript', ['-e', `tell application "Terminal" to do script ${osascriptQuote(script)}`]);
@@ -761,7 +706,7 @@ export function openSessionInTerminal({ sessionId, cwd }) {
     child.on('error', reject);
     child.on('close', (code) => {
       if (code !== 0) reject(new Error(stderr || `osascript exited ${code}`));
-      else resolve({ ok: true, sessionId, cwd: workdir, alreadyOpen: false });
+      else resolve({ ok: true, sessionId, cwd: workdir });
     });
   });
 }
