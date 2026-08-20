@@ -1950,7 +1950,6 @@ async function checkBridge() {
 
 const UPDATE_CHECK_URL =
   'https://raw.githubusercontent.com/forge-ui/forge-design-extension/main/extension/manifest.json';
-const UPDATE_DOCS_URL = 'https://github.com/forge-ui/forge-design-extension';
 const UPDATE_CHECK_MS = 12 * 60 * 60 * 1000;
 
 let pendingUpdateVersion = null;
@@ -1979,7 +1978,11 @@ function localExtensionVersion() {
 function showUpdateBanner(latestVersion) {
   pendingUpdateVersion = latestVersion;
   document.getElementById('updateBannerText').textContent = `有新版本 ${latestVersion}`;
-  document.getElementById('updateBannerLink').href = UPDATE_DOCS_URL;
+  const updateNowBtn = document.getElementById('updateNowBtn');
+  if (updateNowBtn) {
+    updateNowBtn.disabled = false;
+    updateNowBtn.textContent = '更新';
+  }
   document.getElementById('updateBanner').hidden = false;
 }
 
@@ -2064,6 +2067,25 @@ document.getElementById('dismissUpdateBtn').addEventListener('click', async () =
     await chrome.storage.local.set({ dismissedUpdateVersion: pendingUpdateVersion });
   }
   hideUpdateBanner();
+});
+
+document.getElementById('updateNowBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('updateNowBtn');
+  const label = document.getElementById('updateBannerText');
+  btn.disabled = true;
+  btn.textContent = '更新中';
+  label.textContent = pendingUpdateVersion ? `正在更新到 ${pendingUpdateVersion}` : '正在更新';
+  try {
+    await api('/update', { method: 'POST', body: '{}' });
+    await chrome.storage.local.remove(['latestExtensionVersion', 'latestExtensionCheckedAt']);
+    chrome.runtime.reload();
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = '重试';
+    label.textContent = err.message === 'Failed to fetch'
+      ? '本机桥接未启动，无法更新'
+      : err.message || '更新失败';
+  }
 });
 
 document.getElementById('copyInstall').addEventListener('click', async () => {

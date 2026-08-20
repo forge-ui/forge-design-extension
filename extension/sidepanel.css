@@ -238,14 +238,26 @@ body {
   flex-shrink: 0;
 }
 
-.update-docs {
-  color: var(--fg-black);
-  text-decoration: none;
-  font-size: 12px;
+.update-now {
+  flex-shrink: 0;
+  height: 24px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--fg-black);
+  color: #fff;
+  font: 650 12px/24px Manrope, ui-sans-serif, system-ui, sans-serif;
+  cursor: pointer;
 }
 
-.update-docs:hover {
-  text-decoration: underline;
+.update-now:hover {
+  filter: brightness(1.05);
+}
+
+.update-now:disabled {
+  opacity: 0.45;
+  cursor: default;
+  filter: none;
 }
 
 .update-dismiss {

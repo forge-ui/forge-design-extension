@@ -25,6 +25,7 @@ import {
   buildGrokContext,
   openSessionInTerminal,
 } from './sessions.js';
+import { updateInstalledExtension } from './update.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -365,6 +366,18 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
+  if (req.method === 'POST' && url.pathname === '/update') {
+    if (!checkAuth(req)) return unauthorized(res);
+    try {
+      const result = await updateInstalledExtension({
+        rootExtensionDir: path.join(ROOT, 'extension'),
+      });
+      return json(res, 200, result);
+    } catch (err) {
+      return json(res, 500, { error: err.message });
+    }
+  }
+
   // Token bootstrap helper for local only
   if (req.method === 'GET' && url.pathname === '/token') {
     // Only allow from localhost without auth for convenience on first setup
@@ -519,6 +532,7 @@ const server = http.createServer(async (req, res) => {
         '/sessions',
         'POST /sessions',
         'POST /command',
+        'POST /update',
       ],
     });
   }
