@@ -549,6 +549,66 @@ function renderAssistant(el, msg) {
   });
 }
 
+function pickChipLabel(pick) {
+  return [pick?.tag, pick?.text || pick?.selector].filter(Boolean).join(' · ');
+}
+
+function renderUser(el, msg) {
+  el.className = 'msg user';
+  el.replaceChildren();
+  if (msg.text) {
+    const bubble = document.createElement('div');
+    bubble.className = 'msg-bubble';
+    bubble.innerHTML = formatText(msg.text, false);
+    el.appendChild(bubble);
+  }
+  const hasShot = !!msg.screenshot;
+  const hasPick = !!(msg.pick?.selector && msg.screenshotKind !== 'annotate');
+  if (!hasShot && !hasPick) return;
+  const attach = document.createElement('div');
+  attach.className = 'msg-attach';
+  if (hasShot) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'msg-shot-btn';
+    btn.title = '查看大图';
+    const img = document.createElement('img');
+    img.className = 'msg-shot';
+    img.alt = msg.screenshotKind === 'annotate' ? '截图标注' : '选中元素';
+    img.src = msg.screenshot;
+    btn.appendChild(img);
+    btn.addEventListener('click', () => openShotPreview(msg.screenshot, img.alt));
+    attach.appendChild(btn);
+  }
+  if (hasPick) {
+    const chip = document.createElement('div');
+    chip.className = 'msg-pick';
+    chip.textContent = pickChipLabel(msg.pick);
+    attach.appendChild(chip);
+  }
+  el.appendChild(attach);
+}
+
+function openShotPreview(src, alt) {
+  const root = document.getElementById('shotPreview');
+  const img = document.getElementById('shotPreviewImg');
+  if (!root || !img || !src) return;
+  img.src = src;
+  img.alt = alt || '截图预览';
+  root.hidden = false;
+}
+
+function closeShotPreview() {
+  const root = document.getElementById('shotPreview');
+  const img = document.getElementById('shotPreviewImg');
+  if (!root) return;
+  root.hidden = true;
+  if (img) {
+    img.removeAttribute('src');
+    img.alt = '截图预览';
+  }
+}
+
 function renderMessages() {
   const prevScroll = thread.scrollTop;
   thread.querySelectorAll('.msg').forEach((node) => node.remove());
@@ -560,8 +620,7 @@ function renderMessages() {
     } else if (msg.role === 'assistant') {
       renderAssistant(el, msg);
     } else {
-      el.className = 'msg user';
-      el.innerHTML = formatText(msg.text, false);
+      renderUser(el, msg);
     }
     thread.appendChild(el);
   }
@@ -675,9 +734,7 @@ function renderPickChip() {
     clearPickBtn.hidden = false;
     return;
   }
-  pickLabel.textContent = [lastPick.tag, lastPick.text || lastPick.selector]
-    .filter(Boolean)
-    .join(' · ');
+  pickLabel.textContent = pickChipLabel(lastPick);
   clearPickBtn.hidden = false;
 }
 
@@ -694,6 +751,84 @@ function clearPageTarget() {
   lastAnnotate = null;
   annotatePending = false;
   renderPickChip();
+}
+
+function placePickFromOptions(options = {}) {
+  return (
+    options.places?.[0]?.pick ||
+    options.place?.pick ||
+    options.place?.places?.[0]?.pick ||
+    null
+  );
+}
+
+function takeComposerAttachments(options = {}) {
+  if (options.screenshot || options.pick?.selector) {
+    clearPageTarget();
+    return {
+      pick: options.pick?.selector ? options.pick : null,
+      screenshot: options.screenshot || null,
+      screenshotKind: options.screenshotKind || null,
+      screenshotNotes: options.screenshotNotes || null,
+    };
+  }
+  const annotateOn = !!(includeAnnotate && lastAnnotate?.screenshot);
+  const pickOn = !!(includePick && lastPick?.selector);
+  const attachments = {
+    pick: pickOn ? lastPick : placePickFromOptions(options),
+    screenshot: annotateOn ? lastAnnotate.screenshot : null,
+    screenshotKind: annotateOn ? 'annotate' : null,
+    screenshotNotes: annotateOn && Array.isArray(lastAnnotate.notes) ? lastAnnotate.notes : null,
+  };
+  clearPageTarget();
+  return attachments;
+}
+
+const sessionAttachments = new Map();
+
+function rememberSessionAttachments(sessionId, messages) {
+  if (!sessionId) return;
+  const items = (messages || [])
+    .filter((msg) => msg.role === 'user' && (msg.screenshot || msg.pick))
+    .map((msg) => ({
+      text: msg.text,
+      pick: msg.pick || null,
+      screenshot: msg.screenshot || null,
+      screenshotKind: msg.screenshotKind || null,
+    }));
+  if (items.length) sessionAttachments.set(sessionId, items);
+  else sessionAttachments.delete(sessionId);
+}
+
+function patchLatestUser(patch) {
+  for (let index = current.messages.length - 1; index >= 0; index -= 1) {
+    const msg = current.messages[index];
+    if (msg.role !== 'user') continue;
+    if (patch.pick) msg.pick = patch.pick;
+    if (patch.screenshot) msg.screenshot = patch.screenshot;
+    if (patch.screenshotKind) msg.screenshotKind = patch.screenshotKind;
+    rememberSessionAttachments(current.id, current.messages);
+    return;
+  }
+}
+
+function mergeUserAttachments(nextMessages, prevMessages) {
+  const prevUsers = (prevMessages || []).filter(
+    (msg) => msg.role === 'user' && (msg.screenshot || msg.pick)
+  );
+  if (!prevUsers.length) return nextMessages || [];
+  const nextUsers = (nextMessages || []).filter((msg) => msg.role === 'user');
+  let prevIndex = prevUsers.length - 1;
+  for (let index = nextUsers.length - 1; index >= 0 && prevIndex >= 0; index -= 1) {
+    const next = nextUsers[index];
+    const prev = prevUsers[prevIndex];
+    if (next.text !== prev.text) continue;
+    if (!next.screenshot && prev.screenshot) next.screenshot = prev.screenshot;
+    if (!next.screenshotKind && prev.screenshotKind) next.screenshotKind = prev.screenshotKind;
+    if (!next.pick && prev.pick) next.pick = prev.pick;
+    prevIndex -= 1;
+  }
+  return nextMessages || [];
 }
 
 function applyAnnotate(annotate) {
@@ -1179,13 +1314,19 @@ async function setCurrentCwd(dir) {
 }
 
 function applySession(session, { stick = true } = {}) {
+  if (current.id) rememberSessionAttachments(current.id, current.messages);
+  const prev =
+    !current.id || current.id === session.id
+      ? current.messages
+      : sessionAttachments.get(session.id) || [];
   current = {
     id: session.id,
     cwd: session.cwd,
     title: session.title,
     updatedAt: session.updatedAt || null,
-    messages: session.messages || [],
+    messages: mergeUserAttachments(session.messages || [], prev),
   };
+  rememberSessionAttachments(current.id, current.messages);
   if (stick) stickToBottom = true;
   setTitle(session.title);
   renderMessages();
@@ -1345,11 +1486,12 @@ function enqueueMessage(text, options = {}) {
 function sendOrQueue(text, options = {}) {
   const trimmed = String(text || '').trim();
   if (!trimmed) return;
+  const next = { ...options, ...takeComposerAttachments(options) };
   if (sending) {
-    enqueueMessage(trimmed, options);
+    enqueueMessage(trimmed, next);
     return;
   }
-  void sendMessage(trimmed, options);
+  void sendMessage(trimmed, next);
 }
 
 function drainQueue() {
@@ -1385,8 +1527,20 @@ async function sendMessage(text, options = {}) {
   const abort = new AbortController();
   activeAbort = abort;
   stickToBottom = true;
-  current.messages.push({ role: 'user', text });
+  const placingNow = !!(options.place || options.places?.length);
+  let pick = options.pick?.selector ? options.pick : null;
+  let screenshot = options.screenshot || null;
+  let screenshotKind = options.screenshotKind || null;
+  let screenshotNotes = options.screenshotNotes || null;
+  if (!placingNow && screenshotKind === 'annotate') {
+    pick = null;
+  } else if (!pick) {
+    const placePick = placePickFromOptions(options);
+    if (placePick?.selector) pick = placePick;
+  }
+  current.messages.push({ role: 'user', text, pick, screenshot, screenshotKind });
   current.messages.push({ role: 'assistant', text: '', pending: true });
+  rememberSessionAttachments(current.id, current.messages);
   empty.hidden = true;
   renderMessages();
   input.value = '';
@@ -1395,31 +1549,16 @@ async function sendMessage(text, options = {}) {
     // DOM-first: never full-page shot. Pick/place may attach a small element crop.
     // Screenshot annotate is an explicit user crop + marks, not a page dump.
     const page = await getPageContext({ screenshot: false });
-    let pick = includePick && lastPick?.selector ? lastPick : null;
-    let screenshot = null;
-    let screenshotKind = null;
-    let screenshotNotes = null;
-    const placingNow = !!(options.place || options.places?.length);
-    if (!placingNow && includeAnnotate && lastAnnotate?.screenshot) {
-      screenshot = lastAnnotate.screenshot;
-      screenshotKind = 'annotate';
-      screenshotNotes = Array.isArray(lastAnnotate.notes) ? lastAnnotate.notes : null;
-      pick = null;
-    } else {
-      const placePick =
-        options.places?.[0]?.pick ||
-        options.place?.pick ||
-        options.place?.places?.[0]?.pick ||
-        null;
-      const cropSource = pick || (options.place || options.places?.length ? placePick : null);
+    if (screenshotKind !== 'annotate') {
+      const cropSource = pick || (placingNow ? placePickFromOptions(options) : null);
       if (cropSource?.selector) {
         const cropped = await getElementCrop(cropSource);
-        if (cropped.pick && pick) {
-          pick = cropped.pick;
-          lastPick = pick;
-          renderPickChip();
+        if (cropped.pick) pick = cropped.pick;
+        if (cropped.screenshot) screenshot = cropped.screenshot;
+        if (cropped.pick || cropped.screenshot) {
+          patchLatestUser({ pick, screenshot });
+          renderMessages();
         }
-        screenshot = cropped.screenshot || null;
       }
     }
     const pathname = current.id ? `/sessions/${current.id}/messages` : '/sessions';
@@ -1732,8 +1871,16 @@ input.addEventListener('keydown', (event) => {
   }
 });
 
+document.getElementById('shotPreviewClose')?.addEventListener('click', closeShotPreview);
+document.getElementById('shotPreviewImg')?.addEventListener('click', closeShotPreview);
+
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape' && event.code !== 'Escape') return;
+  const shotPreview = document.getElementById('shotPreview');
+  if (shotPreview && !shotPreview.hidden) {
+    closeShotPreview();
+    return;
+  }
   if (!pickMenu.hidden) {
     closePickMenu();
     return;
