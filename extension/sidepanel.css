@@ -850,10 +850,52 @@ body.setup-on .jump-latest {
   height: 22px;
 }
 
+.thinking-copy {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+  flex: 1;
+}
+
 .thinking-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: var(--chat-size);
   font-weight: 400;
   letter-spacing: 0.01em;
+}
+
+.thinking-elapsed {
+  flex-shrink: 0;
+  color: var(--fg-grey-700);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.activity-trail {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 30px;
+  color: var(--fg-grey-700);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.activity-trail li {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.msg.assistant.streaming .thinking {
+  margin-top: 10px;
+  color: var(--fg-grey-700);
+}
+
+.msg.assistant.streaming .thinking-label {
+  font-size: 13px;
+  color: var(--fg-grey-700);
 }
 
 .thinking-dots::after {
@@ -889,7 +931,8 @@ body.setup-on .jump-latest {
 .jump-latest[hidden],
 .palette[hidden],
 .place-banner[hidden],
-.message-queue[hidden] {
+.message-queue[hidden],
+.activity-trail[hidden] {
   display: none !important;
 }
 

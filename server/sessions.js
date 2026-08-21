@@ -413,6 +413,84 @@ function grokArgs({ prompt, rules, sessionId, cwd, stream }) {
   return args;
 }
 
+function truncateLabel(value, max = 32) {
+  const text = String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (text.length <= max) return text;
+  return `${text.slice(0, max - 1)}…`;
+}
+
+function fileBaseName(value) {
+  const raw = String(value || '')
+    .trim()
+    .replace(/\\/g, '/');
+  if (!raw) return '';
+  return truncateLabel(raw.split('/').filter(Boolean).pop() || '', 48);
+}
+
+function toolInput(event) {
+  const input = event?.rawInput;
+  return input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+}
+
+function toolTarget(event) {
+  const input = toolInput(event);
+  const fromInput = input.path || input.target_file || input.file_path || input.filePath;
+  if (fromInput) return fileBaseName(fromInput);
+  const location = Array.isArray(event?.locations) ? event.locations[0] : null;
+  return fileBaseName(location?.path);
+}
+
+function toolQuery(event) {
+  const input = toolInput(event);
+  return truncateLabel(input.pattern || input.query || input.q, 24);
+}
+
+function classifyToolVerb(event) {
+  const name = String(event?.toolName || event?.tool_name || '').toLowerCase();
+  const kind = String(event?.kind || '').toLowerCase();
+  if (kind === 'edit' || /search_replace|^write$|str_replace/.test(name)) return 'edit';
+  if (kind === 'read' || /^(read_file|list_dir|read)$/.test(name)) return 'read';
+  if (/spawn_subagent|subagent/.test(name)) return 'subagent';
+  if (kind === 'execute' || /bash|terminal|command|shell/.test(name)) return 'run';
+  if (kind === 'search' || kind === 'fetch' || /grep|glob|web_search|open_page|browse/.test(name)) {
+    return 'search';
+  }
+  return kind || 'other';
+}
+
+function labelForTool(verb, target, query) {
+  if (verb === 'read') return target ? `读取 ${target}` : '读取文件';
+  if (verb === 'edit') return target ? `编辑 ${target}` : '编辑代码';
+  if (verb === 'search') {
+    if (query) return `搜索 ${query}`;
+    if (target) return `搜索 ${target}`;
+    return '搜索';
+  }
+  if (verb === 'run') return '运行命令';
+  if (verb === 'subagent') return '启动子任务';
+  return target || '';
+}
+
+/** Compact grok stream events for the side panel. Never forwards file contents. */
+export function toActivityEvent(event) {
+  if (!event || typeof event !== 'object') return null;
+  if (event.type === 'thought') {
+    return { type: 'activity', verb: 'think', label: '思考中', status: 'in_progress' };
+  }
+  if (event.type !== 'tool_call' && event.type !== 'tool_call_update') return null;
+  const id = String(event.toolCallId || event.tool_call_id || '');
+  const status = String(event.status || (event.type === 'tool_call' ? 'in_progress' : ''));
+  const verb = classifyToolVerb(event);
+  const label = labelForTool(verb, toolTarget(event), toolQuery(event));
+  const activity = { type: 'activity', status: status || 'in_progress' };
+  if (id) activity.id = id;
+  if (verb && verb !== 'other') activity.verb = verb;
+  if (label) activity.label = label;
+  return activity;
+}
+
 export function runGrok({ prompt, rules, sessionId, cwd, timeoutMs = 600000 }) {
   return new Promise((resolve, reject) => {
     const child = spawn(resolveGrokBin(), grokArgs({ prompt, rules, sessionId, cwd, stream: false }), {
@@ -460,6 +538,7 @@ export function startGrokStream({ prompt, rules, sessionId, cwd, timeoutMs = 600
   let stderr = '';
   let text = '';
   let finalSessionId = sessionId || null;
+  let lastThoughtAt = 0;
   const timer = setTimeout(() => {
     child.kill('SIGTERM');
   }, timeoutMs);
@@ -482,14 +561,24 @@ export function startGrokStream({ prompt, rules, sessionId, cwd, timeoutMs = 600
         text += event.data;
         // Delta only — avoid O(n²) SSE payloads with full cumulative text
         onEvent?.({ type: 'text', data: event.data });
+        continue;
       }
       if (event.type === 'end') {
         finalSessionId = event.sessionId || event.session_id || finalSessionId;
         if (event.text) text = event.text;
+        continue;
       }
       if (event.type === 'error') {
         onEvent?.({ type: 'error', message: event.message || 'grok error' });
+        continue;
       }
+      if (event.type === 'thought') {
+        const now = Date.now();
+        if (now - lastThoughtAt < 400) continue;
+        lastThoughtAt = now;
+      }
+      const activity = toActivityEvent(event);
+      if (activity) onEvent?.(activity);
     }
   });
   child.stderr.on('data', (chunk) => {

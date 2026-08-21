@@ -9,6 +9,7 @@ import {
   buildGrokContext,
   buildGrokPrompt,
   readMessagesFromUpdates,
+  toActivityEvent,
 } from './sessions.js';
 
 test('extractUserText keeps the last user_query and drops harness tags', () => {
@@ -166,4 +167,100 @@ test('readMessagesFromUpdates matches TUI user/assistant chunks and strips last-
       ['assistant', '改为单列。'],
     ],
   );
+});
+
+test('toActivityEvent maps thought and tools without leaking contents', () => {
+  assert.deepEqual(toActivityEvent({ type: 'thought', data: 'secret reasoning' }), {
+    type: 'activity',
+    verb: 'think',
+    label: '思考中',
+    status: 'in_progress',
+  });
+  assert.equal(JSON.stringify(toActivityEvent({ type: 'thought', data: 'secret reasoning' })).includes('secret'), false);
+
+  assert.deepEqual(
+    toActivityEvent({
+      type: 'tool_call',
+      toolCallId: 'call_1',
+      title: 'Read',
+      kind: 'read',
+      status: 'in_progress',
+      toolName: 'read_file',
+      rawInput: { path: 'src/sidepanel.js' },
+      content: ['file body'],
+    }),
+    {
+      type: 'activity',
+      id: 'call_1',
+      verb: 'read',
+      label: '读取 sidepanel.js',
+      status: 'in_progress',
+    },
+  );
+
+  assert.deepEqual(
+    toActivityEvent({
+      type: 'tool_call',
+      toolCallId: 'call_2',
+      kind: 'edit',
+      toolName: 'search_replace',
+      rawInput: { target_file: '/Users/me/app/sessions.js', old_string: 'secret' },
+    }),
+    {
+      type: 'activity',
+      id: 'call_2',
+      verb: 'edit',
+      label: '编辑 sessions.js',
+      status: 'in_progress',
+    },
+  );
+
+  const pattern = 'streaming-json-event-names-are-very-long';
+  const grep = toActivityEvent({
+    type: 'tool_call',
+    toolCallId: 'call_3',
+    kind: 'search',
+    toolName: 'grep',
+    rawInput: { pattern },
+  });
+  assert.equal(grep.verb, 'search');
+  assert.match(grep.label, /^搜索 /);
+  assert.equal(grep.label.includes(pattern), false);
+
+  const bash = toActivityEvent({
+    type: 'tool_call',
+    toolCallId: 'call_4',
+    kind: 'execute',
+    toolName: 'run_terminal_command',
+    rawInput: { command: 'cat ~/.ssh/id_rsa' },
+  });
+  assert.deepEqual(bash, {
+    type: 'activity',
+    id: 'call_4',
+    verb: 'run',
+    label: '运行命令',
+    status: 'in_progress',
+  });
+  assert.equal(JSON.stringify(bash).includes('id_rsa'), false);
+
+  const update = toActivityEvent({
+    type: 'tool_call_update',
+    toolCallId: 'call_1',
+    status: 'completed',
+    rawOutput: { text: 'entire file contents' },
+  });
+  assert.equal(update.id, 'call_1');
+  assert.equal(update.status, 'completed');
+  assert.equal(JSON.stringify(update).includes('entire file'), false);
+
+  assert.equal(
+    toActivityEvent({
+      type: 'tool_call',
+      toolCallId: 'call_5',
+      toolName: 'spawn_subagent',
+    }).label,
+    '启动子任务',
+  );
+  assert.equal(toActivityEvent({ type: 'usage' }), null);
+  assert.equal(toActivityEvent({ type: 'text', data: 'hi' }), null);
 });

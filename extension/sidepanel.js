@@ -501,6 +501,140 @@ function formatWorkedFor(ms) {
   return remainMinutes ? `思考了${hours}小时${remainMinutes}分` : `思考了${hours}小时`;
 }
 
+function formatElapsed(ms) {
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 1) return '';
+  if (seconds < 60) return `${seconds}秒`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  if (minutes < 60) return rest ? `${minutes}分${rest}秒` : `${minutes}分钟`;
+  const hours = Math.floor(minutes / 60);
+  const remainMinutes = minutes % 60;
+  return remainMinutes ? `${hours}小时${remainMinutes}分` : `${hours}小时`;
+}
+
+let turnActivity = null;
+
+function clearTurnActivity() {
+  if (turnActivity?.timer) clearInterval(turnActivity.timer);
+  turnActivity = null;
+}
+
+function startTurnActivity() {
+  clearTurnActivity();
+  turnActivity = {
+    startedAt: Date.now(),
+    current: { label: '思考中', verb: 'think' },
+    trail: [],
+    tools: new Map(),
+    reads: new Set(),
+    edits: 0,
+    seen: new Set(),
+    timer: setInterval(() => patchActivityDom(), 1000),
+  };
+}
+
+function pushTrail(label) {
+  if (!turnActivity || !label) return;
+  const last = turnActivity.trail[turnActivity.trail.length - 1];
+  if (last === label) return;
+  turnActivity.trail.push(label);
+  if (turnActivity.trail.length > 6) turnActivity.trail.shift();
+}
+
+function rememberTool(item) {
+  if (!turnActivity || !item || item.verb === 'think') return;
+  const key = item.id || `${item.verb}:${item.label}`;
+  if (turnActivity.seen.has(key)) return;
+  turnActivity.seen.add(key);
+  if (item.verb === 'read') {
+    const file = String(item.label || '').replace(/^读取 /, '') || key;
+    turnActivity.reads.add(file);
+  } else if (item.verb === 'edit') {
+    turnActivity.edits += 1;
+  }
+}
+
+function formatActivitySummary(activity) {
+  if (!activity) return '';
+  const parts = [];
+  if (activity.reads.size) parts.push(`读了 ${activity.reads.size} 个文件`);
+  if (activity.edits) parts.push(`改了 ${activity.edits} 处`);
+  return parts.join(' · ');
+}
+
+function snapshotActivitySummary() {
+  if (!turnActivity) return '';
+  if (turnActivity.current?.verb && turnActivity.current.verb !== 'think') {
+    rememberTool(turnActivity.current);
+  }
+  return formatActivitySummary(turnActivity);
+}
+
+function applyActivityEvent(event) {
+  if (!turnActivity || event?.type !== 'activity') return;
+  if (event.verb === 'think') {
+    if (turnActivity.current?.verb && turnActivity.current.verb !== 'think') return;
+    turnActivity.current = { label: '思考中', verb: 'think' };
+    patchActivityDom();
+    return;
+  }
+  const status = event.status || 'in_progress';
+  const done = status === 'completed' || status === 'failed';
+  const prev = (event.id && turnActivity.tools.get(event.id)) || {};
+  const item = {
+    id: event.id,
+    label: event.label || prev.label || (turnActivity.current?.id === event.id ? turnActivity.current.label : ''),
+    verb: event.verb || prev.verb || (turnActivity.current?.id === event.id ? turnActivity.current.verb : ''),
+    status,
+  };
+  if (item.id) turnActivity.tools.set(item.id, item);
+  if (done) {
+    rememberTool(item);
+    if (item.label) pushTrail(item.label);
+    if (!event.id || turnActivity.current?.id === event.id) {
+      turnActivity.current = { label: '思考中', verb: 'think' };
+    }
+    patchActivityDom();
+    return;
+  }
+  if (turnActivity.current?.verb && turnActivity.current.verb !== 'think' && turnActivity.current.id !== item.id) {
+    if (turnActivity.current.label) pushTrail(turnActivity.current.label);
+  }
+  turnActivity.current = item.label ? item : { ...item, label: turnActivity.current?.label || '思考中' };
+  patchActivityDom();
+}
+
+function patchActivityDom() {
+  const el = thread.querySelector('.msg.assistant.pending, .msg.assistant.streaming');
+  if (!el || !turnActivity) return;
+  const labelEl = el.querySelector('.thinking-label');
+  const elapsedEl = el.querySelector('.thinking-elapsed');
+  const trailEl = el.querySelector('.activity-trail');
+  const label = turnActivity.current?.label || '思考中';
+  if (labelEl && labelEl.textContent !== label) labelEl.textContent = label;
+  if (elapsedEl) elapsedEl.textContent = formatElapsed(Date.now() - turnActivity.startedAt);
+  if (trailEl) {
+    const streaming = el.classList.contains('streaming');
+    const items = turnActivity.trail;
+    trailEl.hidden = streaming || items.length === 0;
+    if (!trailEl.hidden) {
+      const key = items.join('\n');
+      if (trailEl.dataset.key !== key) {
+        trailEl.dataset.key = key;
+        trailEl.replaceChildren(
+          ...items.map((text) => {
+            const li = document.createElement('li');
+            li.textContent = text;
+            return li;
+          }),
+        );
+      }
+    }
+  }
+  syncThreadScroll();
+}
+
 function formatMessageTime(iso) {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return '';
@@ -511,28 +645,41 @@ function formatMessageTime(iso) {
   });
 }
 
-function stampAssistantMeta(messages, startedAt) {
+function stampAssistantMeta(messages, startedAt, summary) {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     if (messages[index].role === 'assistant' && !messages[index].pending) {
       messages[index].workedMs = Date.now() - startedAt;
       messages[index].at = new Date().toISOString();
+      if (summary) messages[index].workSummary = summary;
       return;
     }
   }
 }
 
+function workLine(msg) {
+  const parts = [];
+  if (msg.workedMs != null) parts.push(formatWorkedFor(msg.workedMs));
+  if (msg.workSummary) parts.push(msg.workSummary);
+  return parts.join(' · ');
+}
+
 function renderThinking(el) {
   el.className = 'msg assistant pending';
+  const label = turnActivity?.current?.label || '思考中';
+  const elapsed = turnActivity ? formatElapsed(Date.now() - turnActivity.startedAt) : '';
+  const trail = turnActivity?.trail || [];
+  const trailItems = trail.map((text) => `<li>${escapeHtml(text)}</li>`).join('');
   el.innerHTML =
-    '<div class="thinking"><canvas class="thinking-orb" width="22" height="22"></canvas><span class="thinking-label">Thinking<span class="thinking-dots"></span></span></div>';
+    `<div class="thinking"><canvas class="thinking-orb" width="22" height="22"></canvas><span class="thinking-copy"><span class="thinking-label">${escapeHtml(label)}</span><span class="thinking-dots"></span></span><span class="thinking-elapsed">${escapeHtml(elapsed)}</span></div><ul class="activity-trail"${trail.length ? '' : ' hidden'}>${trailItems}</ul>`;
   const canvas = el.querySelector('canvas');
   if (canvas && window.startThinkingOrb) window.startThinkingOrb(canvas, 22, 'composing');
 }
 
 function renderAssistant(el, msg) {
   el.className = 'msg assistant';
-  const work = msg.workedMs != null
-    ? `<div class="msg-work">${escapeHtml(formatWorkedFor(msg.workedMs))}</div>`
+  const line = workLine(msg);
+  const work = line
+    ? `<div class="msg-work">${escapeHtml(line)}</div>`
     : '';
   const time = msg.at
     ? `<span class="msg-time">${escapeHtml(formatMessageTime(msg.at))}</span>`
@@ -661,6 +808,22 @@ let streamPaintText = '';
 let streamPaintRaf = 0;
 let streamBodyEl = null;
 
+function placeActivityUnderBody(el, body) {
+  const thinking = el.querySelector('.thinking');
+  if (!thinking) return;
+  thinking.classList.add('thinking-compact');
+  if (body.nextElementSibling !== thinking) {
+    body.insertAdjacentElement('afterend', thinking);
+  }
+  const trail = el.querySelector('.activity-trail');
+  if (trail) {
+    trail.hidden = true;
+    if (thinking.nextElementSibling !== trail) {
+      thinking.insertAdjacentElement('afterend', trail);
+    }
+  }
+}
+
 function ensureStreamingBody() {
   if (streamBodyEl?.isConnected) return streamBodyEl;
   let el = thread.querySelector('.msg.assistant.streaming');
@@ -668,9 +831,15 @@ function ensureStreamingBody() {
     el = thread.querySelector('.msg.assistant.pending');
     if (!el) return null;
     el.className = 'msg assistant streaming';
-    el.innerHTML = '<div class="msg-body stream-plain"></div>';
   }
-  streamBodyEl = el.querySelector('.msg-body');
+  let body = el.querySelector('.msg-body');
+  if (!body) {
+    body = document.createElement('div');
+    body.className = 'msg-body stream-plain';
+    el.appendChild(body);
+  }
+  placeActivityUnderBody(el, body);
+  streamBodyEl = body;
   return streamBodyEl;
 }
 
@@ -1435,6 +1604,7 @@ function clearMessageQueue() {
 function abandonTurn() {
   sendGeneration += 1;
   clearMessageQueue();
+  clearTurnActivity();
   if (sending) stopMessage();
 }
 
@@ -1540,6 +1710,7 @@ async function sendMessage(text, options = {}) {
   }
   current.messages.push({ role: 'user', text, pick, screenshot, screenshotKind });
   current.messages.push({ role: 'assistant', text: '', pending: true });
+  startTurnActivity();
   rememberSessionAttachments(current.id, current.messages);
   empty.hidden = true;
   renderMessages();
@@ -1591,6 +1762,10 @@ async function sendMessage(text, options = {}) {
     let streamed = '';
     let result = {};
     await readSseEvents(res, (event) => {
+      if (event.type === 'activity') {
+        applyActivityEvent(event);
+        return;
+      }
       if (event.type === 'text') {
         // Prefer delta; fall back to cumulative text from older bridges
         if (event.data) streamed += event.data;
@@ -1602,16 +1777,17 @@ async function sendMessage(text, options = {}) {
     });
     flushStreamingPaint();
     if (generation !== sendGeneration) return;
+    const summary = snapshotActivitySummary();
     if (result.session) {
+      stampAssistantMeta(result.session.messages, startedAt, summary);
       applySession(result.session, { stick: true });
-      stampAssistantMeta(current.messages, startedAt);
     } else {
       current.messages = current.messages.filter((msg) => !msg.pending);
       current.messages.push({
         role: 'assistant',
         text: result.text || streamed || (result.stopped ? '已停止' : '(空回复)'),
       });
-      stampAssistantMeta(current.messages, startedAt);
+      stampAssistantMeta(current.messages, startedAt, summary);
       current.id = result.sessionId || current.id;
     }
     // Final markdown now; session list refresh must not block the reply paint
@@ -1625,7 +1801,7 @@ async function sendMessage(text, options = {}) {
       if (pending) {
         pending.pending = false;
         pending.text = pending.text || '已停止';
-        stampAssistantMeta(current.messages, startedAt);
+        stampAssistantMeta(current.messages, startedAt, snapshotActivitySummary());
       }
     } else {
       current.messages = current.messages.filter((msg) => !msg.pending);
@@ -1643,6 +1819,7 @@ async function sendMessage(text, options = {}) {
 function finishStreamUi() {
   streamBodyEl = null;
   streamPaintText = '';
+  clearTurnActivity();
   setSending(false);
   renderMessages();
   // Drop page agent overlays/observers as soon as the turn ends (do not wait idle).
