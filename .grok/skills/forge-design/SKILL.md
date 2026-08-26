@@ -27,6 +27,7 @@ Use `scripts/bridge.sh` only when you need the live page (last pick, last place,
 ## Placing a Forge block
 
 - Import from `@forge-ui-official/core` only. Do not hand-roll an equivalent.
+- Colors must stay in the `fg-*` token system. Colored pills (`StatusBadge` / `Label` / hand-rolled rounded chips) are banned on business pages — including status columns. Status, category, role, and tag fields are plain text: red text (`text-fg-red`) for danger/disabled, grey (`text-fg-grey-500`) for inactive, black otherwise. Rainbow pills on enums are a telltale AI smell — never add them, and flag existing ones when you see them on a page you are editing.
 - If cwd is a local Forge / Next app, write real source next to the anchors. Do not only mutate the live DOM.
 - If the current Chrome page is not that app, say so. Do not claim the live page changed.
 - Ignore the in-page replicas. They are plugin overlays, not source. Only write source after the user confirms 写入源码.
