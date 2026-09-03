@@ -1840,7 +1840,10 @@ function setNativeValue(el, value) {
 }
 
 function pageIsBackground() {
-  return document.hidden || document.visibilityState === 'hidden';
+  // hidden/visibility cover a background *tab*. hasFocus() is also false when
+  // this tab is selected but its Chrome window is not the frontmost OS window.
+  // Calling el.focus() in that state brings Chrome to the front on macOS.
+  return document.hidden || document.visibilityState === 'hidden' || !document.hasFocus();
 }
 
 function safeFocus(el) {
@@ -2237,6 +2240,32 @@ async function handleDomCommand(command, args) {
       return { ok: true };
     }
 
+    case 'prepareClick': {
+      if (args.x != null && args.y != null && !args.selector) {
+        return { ok: true, x: Number(args.x), y: Number(args.y) };
+      }
+      const selected = args.selector ? queryOne(args.selector) : null;
+      if (!selected) return { error: `Element not found: ${args.selector}` };
+      const target = preferClickableTarget(selected);
+      target.scrollIntoView({ block: 'center', inline: 'center', behavior: 'auto' });
+      await sleep(80);
+      let center = await pointAtElement(target, '', true);
+      if (!center) {
+        const rect = target.getBoundingClientRect();
+        center = {
+          x: rect.left + Math.max(rect.width, 1) / 2,
+          y: rect.top + Math.max(rect.height, 1) / 2,
+        };
+      }
+      return {
+        ok: true,
+        x: center.x,
+        y: center.y,
+        tag: target.tagName.toLowerCase(),
+        selector: args.selector,
+      };
+    }
+
     case 'click': {
       const selected = args.selector ? queryOne(args.selector) : null;
       if (!selected) return { error: `Element not found: ${args.selector}` };
@@ -2262,8 +2291,7 @@ async function handleDomCommand(command, args) {
     case 'fill': {
       const el = queryOne(args.selector);
       if (!el) return { error: `Element not found: ${args.selector}` };
-      // Move cursor first, then click into the field so focus matches real input.
-      await humanClick(el);
+      if (!args.skipClick) await humanClick(el);
       window.__gcbAgent?.showActivity?.();
       await typeText(el, args.text ?? '', { clear: true, slow: !!args.slow });
       return { ok: true, selector: args.selector };
@@ -2272,7 +2300,7 @@ async function handleDomCommand(command, args) {
     case 'type': {
       let el = args.selector ? queryOne(args.selector) : document.activeElement;
       if (!el) return { error: 'No element to type into' };
-      if (args.selector) {
+      if (args.selector && !args.skipClick) {
         await humanClick(el);
       } else {
         await pointAtElement(el, '输入');
@@ -2368,7 +2396,7 @@ async function handleDomCommand(command, args) {
   }
 }
 
-window.__gcbContentVersion = '0.3.34';
+window.__gcbContentVersion = '0.3.37';
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'ping') {

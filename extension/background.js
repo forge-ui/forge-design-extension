@@ -28,6 +28,8 @@ let lastPlace = null;
 /** After automation goes quiet, tear down page observers/cursor (Codex-style release). */
 const AGENT_UI_IDLE_MS = 2500;
 let agentUiReleaseTimer = null;
+/** Tabs currently attached via chrome.debugger for CDP input. */
+const debuggerTabs = new Set();
 const READONLY_COMMANDS = new Set([
   'status',
   'tabs',
@@ -63,7 +65,10 @@ async function releaseAgentUiNow() {
     clearTimeout(agentUiReleaseTimer);
     agentUiReleaseTimer = null;
   }
-  if (agentTabId) await disableAgentUi(agentTabId);
+  if (agentTabId) {
+    await disableAgentUi(agentTabId);
+    await detachDebugger(agentTabId);
+  }
 }
 
 /**
@@ -546,6 +551,55 @@ async function isUserBrowsingTab(tabId) {
   return user?.id === tabId;
 }
 
+async function getTabWindowId(tabId) {
+  if (!tabId) return null;
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    return tab?.windowId ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function pickSilentWindowId(userWindowId) {
+  const agentWindowId = await getTabWindowId(agentTabId);
+  if (agentWindowId && agentWindowId !== userWindowId) return agentWindowId;
+  try {
+    const windows = await chrome.windows.getAll({ windowTypes: ['normal'] });
+    const other = windows.find((w) => w.id && w.id !== userWindowId);
+    if (other?.id) return other.id;
+  } catch {}
+  return null;
+}
+
+/**
+ * Open a tab that must not cover the window the user is looking at.
+ * Prefers the agent window, then any other existing window; never windows.create.
+ * If only the user's window exists, adds a background tab (active: false).
+ */
+async function createSilentTab(url, { active = false } = {}) {
+  const targetUrl = url || 'about:blank';
+  const user = await getUserFacingTab();
+  const userWindowId = user?.windowId ?? null;
+  const preferWindowId = await pickSilentWindowId(userWindowId);
+
+  if (preferWindowId) {
+    try {
+      return await chrome.tabs.create({
+        url: targetUrl,
+        active: !!active,
+        windowId: preferWindowId,
+      });
+    } catch {}
+  }
+
+  return chrome.tabs.create({
+    url: targetUrl,
+    active: false,
+    ...(userWindowId ? { windowId: userWindowId } : {}),
+  });
+}
+
 /**
  * Resolve the dedicated silent agent tab.
  * Never focuses the user's current tab. Creates a background tab if needed.
@@ -568,11 +622,8 @@ async function ensureAgentTab(preferUrl) {
     return found.id;
   }
 
-  // New silent background tab — never steals the user's current tab
-  const tab = await chrome.tabs.create({
-    url: preferUrl || 'about:blank',
-    active: false,
-  });
+  // New silent tab — never in the window the user is looking at
+  const tab = await createSilentTab(preferUrl, { active: false });
   await setAgentTabId(tab.id);
   waitTabComplete(tab.id).then(() => markAgentTabTitle(tab.id));
   return tab.id;
@@ -591,10 +642,7 @@ async function adoptAgentTab(tabId, preferUrl) {
         if (tab.url && !isRestrictedUrl(tab.url)) url = tab.url;
       } catch {}
     }
-    const created = await chrome.tabs.create({
-      url: url || 'about:blank',
-      active: false,
-    });
+    const created = await createSilentTab(url, { active: false });
     await setAgentTabId(created.id);
     if (url) await waitTabComplete(created.id);
     waitTabComplete(created.id).then(() => markAgentTabTitle(created.id));
@@ -727,6 +775,86 @@ async function sendToTab(tabId, message) {
   }
 }
 
+async function attachDebugger(tabId) {
+  if (!tabId || !chrome.debugger?.attach) return false;
+  if (debuggerTabs.has(tabId)) return true;
+  try {
+    await chrome.debugger.attach({ tabId }, '1.3');
+    debuggerTabs.add(tabId);
+    return true;
+  } catch (err) {
+    const msg = String(err?.message || err);
+    if (/already attached/i.test(msg)) {
+      debuggerTabs.add(tabId);
+      return true;
+    }
+    return false;
+  }
+}
+
+async function detachDebugger(tabId) {
+  if (!tabId || !debuggerTabs.has(tabId)) return;
+  try {
+    await chrome.debugger.detach({ tabId });
+  } catch {}
+  debuggerTabs.delete(tabId);
+}
+
+if (chrome.debugger?.onDetach) {
+  chrome.debugger.onDetach.addListener((source) => {
+    if (source?.tabId != null) debuggerTabs.delete(source.tabId);
+  });
+}
+
+async function cdpSend(tabId, method, params) {
+  return chrome.debugger.sendCommand({ tabId }, method, params || {});
+}
+
+async function cdpClick(tabId, x, y) {
+  const point = { x: Math.round(x), y: Math.round(y) };
+  await cdpSend(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', ...point });
+  await cdpSend(tabId, 'Input.dispatchMouseEvent', {
+    type: 'mousePressed',
+    button: 'left',
+    clickCount: 1,
+    ...point,
+  });
+  await cdpSend(tabId, 'Input.dispatchMouseEvent', {
+    type: 'mouseReleased',
+    button: 'left',
+    clickCount: 1,
+    ...point,
+  });
+}
+
+async function clickViaCdpOrDom(tabId, args) {
+  const prepared = await sendToTab(tabId, {
+    type: 'dom',
+    command: 'prepareClick',
+    args,
+  });
+  if (prepared?.error) return prepared;
+  if (prepared?.x == null || prepared?.y == null) {
+    return sendToTab(tabId, { type: 'dom', command: 'click', args });
+  }
+  const attached = await attachDebugger(tabId);
+  if (attached) {
+    try {
+      await cdpClick(tabId, prepared.x, prepared.y);
+      return {
+        ok: true,
+        via: 'cdp',
+        selector: args.selector,
+        tag: prepared.tag,
+        x: prepared.x,
+        y: prepared.y,
+      };
+    } catch {}
+  }
+  const result = await sendToTab(tabId, { type: 'dom', command: 'click', args });
+  return { ...result, via: 'dom' };
+}
+
 async function handleCommand(command, args) {
   logAction({ command, args });
   if (
@@ -835,12 +963,9 @@ async function handleCommand(command, args) {
       }
 
       case 'newtab': {
-        // Default silent background tab; set as agent tab
+        // Default silent tab in the agent window — never the user's current window
         const foreground = !!args.foreground || !!args.focus;
-        const tab = await chrome.tabs.create({
-          url: args.url || 'about:blank',
-          active: foreground, // default false = silent
-        });
+        const tab = await createSilentTab(args.url, { active: foreground });
         await setAgentTabId(tab.id);
         if (args.url) await waitTabComplete(tab.id);
         await markAgentTabTitle(tab.id);
@@ -938,8 +1063,13 @@ async function handleCommand(command, args) {
               const el = document.querySelector(sel);
               if (!el) return { error: `Element not found: ${sel}` };
               // Field was already clicked by content-script humanClick.
-              // Skip focus() on a background tab — it steals Chrome/OS focus.
-              if (!document.hidden && document.visibilityState !== 'hidden') {
+              // Skip focus() unless this window is frontmost — otherwise macOS
+              // brings Chrome to the front (hidden tabs AND unfocused windows).
+              if (
+                document.hasFocus() &&
+                !document.hidden &&
+                document.visibilityState !== 'hidden'
+              ) {
                 try {
                   el.focus({ preventScroll: true });
                 } catch {
@@ -991,11 +1121,31 @@ async function handleCommand(command, args) {
         }
       }
 
+      case 'click': {
+        const tabId = await resolveWorkTabId(args);
+        if (!tabId) return { error: 'No tab' };
+        const result = await clickViaCdpOrDom(tabId, args);
+        return { tabId, ...result };
+      }
+
+      case 'fill':
+      case 'type': {
+        const tabId = await resolveWorkTabId(args);
+        if (!tabId) return { error: 'No tab' };
+        if (args.selector || (args.x != null && args.y != null)) {
+          const clicked = await clickViaCdpOrDom(tabId, args);
+          if (clicked?.error) return { tabId, ...clicked };
+        }
+        const result = await sendToTab(tabId, {
+          type: 'dom',
+          command,
+          args: { ...args, skipClick: true },
+        });
+        return { tabId, ...result };
+      }
+
       case 'text':
       case 'snapshot':
-      case 'click':
-      case 'fill':
-      case 'type':
       case 'press':
       case 'scroll':
       case 'wait':
