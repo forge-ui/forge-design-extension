@@ -27,7 +27,7 @@ Use `scripts/bridge.sh` only when you need the live page (last pick, last place,
 ## Placing a Forge block
 
 - Import from `@forge-ui-official/core` only. Do not hand-roll an equivalent.
-- Colors must stay in the `fg-*` token system. Colored pills (`StatusBadge` / `Label` / hand-rolled rounded chips) are banned on business pages — including status columns. Status, category, role, and tag fields are plain text: red text (`text-fg-red`) for danger/disabled, grey (`text-fg-grey-500`) for inactive, black otherwise. Rainbow pills on enums are a telltale AI smell — never add them, and flag existing ones when you see them on a page you are editing.
+- Colors must stay in the `fg-*` token system. Semantic status uses Kit `StatusBadge` with the default `variant="soft"` (pale fill, hairline outline, same-hue text — match official finance Transaction). Do not use `variant="solid"`, `Label` as status, or hand-rolled pills. Categories, roles, and tags stay plain text. Rainbow chips on enums are a telltale AI smell — flag and rewrite them when you see them on a page you are editing.
 - If cwd is a local Forge / Next app, write real source next to the anchors. Do not only mutate the live DOM.
 - If the current Chrome page is not that app, say so. Do not claim the live page changed.
 - Ignore the in-page replicas. They are plugin overlays, not source. Only write source after the user confirms 写入源码.
@@ -48,7 +48,7 @@ Use `scripts/bridge.sh` only when you need the live page (last pick, last place,
 
 - Never print `.bridge-state.json`, `BRIDGE_TOKEN`, cookies, passwords, or page secrets.
 - The bridge listens on `127.0.0.1` only. Token stays on this machine.
-- Keep automation on the dedicated agent tab unless the user asks for the active tab.
+- Keep automation on a background tab in the same Chrome window unless the user asks for the active tab. Do not open a new window.
 - Do not pass `focus`, `foreground`, or `useActive` unless the user asked to take over their current tab. Those steal keyboard and window focus.
 
 ## Commands

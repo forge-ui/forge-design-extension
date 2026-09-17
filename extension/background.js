@@ -4,8 +4,9 @@
  * Connects to a local control server over WebSocket and executes browser commands
  * inside the user's real Chrome (tabs + content scripts).
  *
- * Silent mode (default): all automation runs in a dedicated background agent tab
- * and must NOT steal focus from the tab the user is working in.
+ * Silent mode (default): ChatGPT-style — a background tab in the existing
+ * window (`active: false`). Never activate that tab or focus a window unless
+ * they explicitly asked to take over. A new window is last-resort only.
  */
 
 const DEFAULT_PORT = 3847;
@@ -74,64 +75,27 @@ async function releaseAgentUiNow() {
   }
 }
 
-async function windowIsFocused(windowId) {
-  if (windowId == null) return false;
-  try {
-    const win = await chrome.windows.get(windowId);
-    return !!win?.focused;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Snapshot of the tab the user is looking at. Automation must not leave the
- * agent tab (or window) in front when the command finishes.
- *
- * windowFocused is false when Chrome is in the background (user is in another
- * app or browser). In that state we must not activate tabs later — on macOS
- * tabs.update({ active: true }) can bring Chrome to the front.
- */
-async function captureUserFocus() {
+/** Last focused normal window — the one the user is already in. */
+async function getLastFocusedWindowId() {
   try {
     const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-    if (!tab?.id) return null;
-    return {
-      tabId: tab.id,
-      windowId: tab.windowId,
-      windowFocused: await windowIsFocused(tab.windowId),
-    };
+    if (tab?.windowId) return tab.windowId;
+  } catch {}
+  try {
+    const windows = await chrome.windows.getAll({ windowTypes: ['normal'] });
+    const focused = windows.find((w) => w.focused && w.id != null);
+    if (focused?.id != null) return focused.id;
+    return windows.find((w) => w.id != null)?.id ?? null;
   } catch {
     return null;
   }
 }
 
-/**
- * If the agent tab stole the active slot in the user's already-focused window,
- * put their tab back. Never call windows.update({ focused: true }).
- * Never activate a tab in an unfocused window — that yanks Chrome on macOS.
- * If the user switched to some other non-agent tab mid-run, leave them alone.
- */
-async function restoreUserFocus(snapshot) {
-  if (!snapshot?.tabId) return;
-  try {
-    if (!snapshot.windowFocused) return;
-    if (!(await tabExists(snapshot.tabId))) return;
-    const windowId = snapshot.windowId;
-    if (!(await windowIsFocused(windowId))) return;
-    const [active] = await chrome.tabs.query({
-      active: true,
-      ...(windowId != null ? { windowId } : {}),
-    });
-    if (!active?.id) return;
-    if (active.id === snapshot.tabId) return;
-    // User switched to some other non-agent tab mid-run — leave them alone.
-    if (agentTabId && active.id !== agentTabId) return;
-    // Agent tab stole the active slot — put the user back. Never focus the window.
-    if (agentTabId && active.id === agentTabId) {
-      await chrome.tabs.update(snapshot.tabId, { active: true });
-    }
-  } catch {}
+/** True when this tab is the one currently on screen, including the agent tab. */
+async function isUserLookingAtTab(tabId) {
+  if (!tabId) return false;
+  const user = await getUserFacingTab();
+  return user?.id === tabId;
 }
 
 function wantsForeground(args = {}) {
@@ -561,17 +525,6 @@ async function setAgentTabId(nextId) {
   return nextId;
 }
 
-/**
- * True when this tab is the one the user is looking at, and it is not already
- * the dedicated agent workspace. Driving that tab would steal their keyboard.
- */
-async function isUserBrowsingTab(tabId) {
-  if (!tabId) return false;
-  if (tabId === agentTabId) return false;
-  const user = await getUserFacingTab();
-  return user?.id === tabId;
-}
-
 async function getTabWindowId(tabId) {
   if (!tabId) return null;
   try {
@@ -582,80 +535,132 @@ async function getTabWindowId(tabId) {
   }
 }
 
-async function pickSilentWindowId(userWindowId) {
-  const agentWindowId = await getTabWindowId(agentTabId);
-  if (agentWindowId && agentWindowId !== userWindowId) return agentWindowId;
+/**
+ * ChatGPT-style: prefer a background tab in an existing window.
+ * `windows.create` only when Chrome has no normal window at all.
+ */
+async function pickExistingWindowId(preferWindowId) {
+  const windows = await chrome.windows.getAll({ windowTypes: ['normal'] });
+  if (preferWindowId && windows.some((w) => w.id === preferWindowId)) {
+    return preferWindowId;
+  }
+  const focused = windows.find((w) => w.focused && w.id != null);
+  if (focused?.id != null) return focused.id;
+  return windows.find((w) => w.id != null)?.id ?? null;
+}
+
+async function createBackgroundTab(url, windowId) {
+  const targetUrl = url || 'about:blank';
+  const existing = await pickExistingWindowId(windowId);
+  if (existing) {
+    return chrome.tabs.create({
+      url: targetUrl,
+      active: false,
+      windowId: existing,
+    });
+  }
+  const win = await chrome.windows.create({
+    focused: false,
+    type: 'normal',
+    url: targetUrl,
+  });
+  const tab = win?.tabs?.find((t) => t?.id != null);
+  if (tab) return tab;
+  if (win?.id) {
+    return chrome.tabs.create({ url: targetUrl, active: false, windowId: win.id });
+  }
+  return chrome.tabs.create({ url: targetUrl, active: false });
+}
+
+async function closeAbandonedAgentWindow(oldTabId) {
+  if (!oldTabId) return;
   try {
-    const windows = await chrome.windows.getAll({ windowTypes: ['normal'] });
-    const other = windows.find((w) => w.id && w.id !== userWindowId);
-    if (other?.id) return other.id;
+    const tab = await chrome.tabs.get(oldTabId);
+    const siblings = await chrome.tabs.query({ windowId: tab.windowId });
+    if (siblings.length === 1 && siblings[0].id === oldTabId) {
+      await chrome.windows.remove(tab.windowId);
+    }
   } catch {}
-  return null;
+}
+
+async function createAgentWorkspaceTab(url) {
+  return createBackgroundTab(url, await getLastFocusedWindowId());
 }
 
 /**
- * Open a tab that must not cover the window the user is looking at.
- * Prefers the agent window, then any other existing window; never windows.create.
- * If only the user's window exists, adds a background tab (active: false).
+ * Open a background tab. `active` only when the caller asked for foreground.
  */
 async function createSilentTab(url, { active = false } = {}) {
-  const targetUrl = url || 'about:blank';
-  const user = await getUserFacingTab();
-  const userWindowId = user?.windowId ?? null;
-  const preferWindowId = await pickSilentWindowId(userWindowId);
+  const tab = await createAgentWorkspaceTab(url);
+  if (active && tab?.id) {
+    await chrome.tabs.update(tab.id, { active: true });
+    if (tab.windowId) {
+      await chrome.windows.update(tab.windowId, { focused: true });
+    }
+  }
+  return tab;
+}
 
-  if (preferWindowId) {
-    try {
-      return await chrome.tabs.create({
-        url: targetUrl,
-        active: !!active,
-        windowId: preferWindowId,
-      });
-    } catch {}
+async function relocateAgentIfNeeded(preferUrl) {
+  if (!agentTabId || !(await tabExists(agentTabId))) return null;
+  const userWindowId = await getLastFocusedWindowId();
+  const agentWindowId = await getTabWindowId(agentTabId);
+
+  if (await isUserLookingAtTab(agentTabId)) {
+    const created = await createAgentWorkspaceTab(preferUrl);
+    await setAgentTabId(created.id);
+    waitTabComplete(created.id).then(() => markAgentTabTitle(created.id));
+    return created.id;
   }
 
-  return chrome.tabs.create({
-    url: targetUrl,
-    active: false,
-    ...(userWindowId ? { windowId: userWindowId } : {}),
-  });
+  // Leftover isolated window from 0.3.39: move work back into the user's window.
+  if (userWindowId && agentWindowId && agentWindowId !== userWindowId) {
+    const created = await createBackgroundTab(preferUrl, userWindowId);
+    const old = agentTabId;
+    await setAgentTabId(created.id);
+    waitTabComplete(created.id).then(() => markAgentTabTitle(created.id));
+    await closeAbandonedAgentWindow(old);
+    return created.id;
+  }
+
+  return agentTabId;
 }
 
 /**
- * Resolve the dedicated silent agent tab.
- * Never focuses the user's current tab. Creates a background tab if needed.
+ * Resolve the dedicated silent agent tab (background tab in the user's window).
  */
 async function ensureAgentTab(preferUrl) {
-  if (agentTabId && (await tabExists(agentTabId))) {
-    return agentTabId;
-  }
+  const relocated = await relocateAgentIfNeeded(preferUrl);
+  if (relocated) return relocated;
 
   const user = await getUserFacingTab();
-
-  // Reuse a previously marked agent tab if storage was lost — but never the
-  // tab the user is currently browsing.
+  const userWindowId = await getLastFocusedWindowId();
   const all = await chrome.tabs.query({});
   const found = all.find(
-    (t) => t.id !== user?.id && t.title && t.title.includes(AGENT_TAB_TITLE_MARK)
+    (t) =>
+      t.id &&
+      t.id !== user?.id &&
+      t.title &&
+      t.title.includes(AGENT_TAB_TITLE_MARK) &&
+      (userWindowId == null || t.windowId === userWindowId)
   );
   if (found?.id) {
     await setAgentTabId(found.id);
     return found.id;
   }
 
-  // New silent tab — never in the window the user is looking at
-  const tab = await createSilentTab(preferUrl, { active: false });
+  const tab = await createAgentWorkspaceTab(preferUrl);
   await setAgentTabId(tab.id);
   waitTabComplete(tab.id).then(() => markAgentTabTitle(tab.id));
   return tab.id;
 }
 
 /**
- * Pin a tab as the agent workspace. If that tab is the one the user is
- * browsing, clone it into a silent background tab instead of hijacking it.
+ * Pin a tab as the agent workspace. If the user is looking at it, clone to a
+ * background tab in the same window instead of navigating under their eyes.
  */
 async function adoptAgentTab(tabId, preferUrl) {
-  if (tabId && (await isUserBrowsingTab(tabId))) {
+  if (tabId && (await isUserLookingAtTab(tabId))) {
     let url = preferUrl;
     if (!url) {
       try {
@@ -663,7 +668,7 @@ async function adoptAgentTab(tabId, preferUrl) {
         if (tab.url && !isRestrictedUrl(tab.url)) url = tab.url;
       } catch {}
     }
-    const created = await createSilentTab(url, { active: false });
+    const created = await createAgentWorkspaceTab(url);
     await setAgentTabId(created.id);
     if (url) await waitTabComplete(created.id);
     waitTabComplete(created.id).then(() => markAgentTabTitle(created.id));
@@ -679,15 +684,12 @@ async function adoptAgentTab(tabId, preferUrl) {
 /** Resolve work tab: explicit tabId > agent tab. Never defaults to user active tab. */
 async function resolveWorkTabId(args = {}) {
   // useActive: true only if caller explicitly wants current tab (rare).
-  // Do NOT reassign agentTabId here — operating the active tab once must not
-  // permanently mark the user's browsing tab as the silent agent tab.
   if (args.useActive) {
     const active = await getActiveTab();
     if (active?.id) return active.id;
   }
   if (args.tabId && (await tabExists(args.tabId))) {
-    // A stale tabId must not pull automation onto the page the user is using.
-    if (!(await isUserBrowsingTab(args.tabId))) return args.tabId;
+    if (!(await isUserLookingAtTab(args.tabId))) return args.tabId;
   }
   return ensureAgentTab(args.url);
 }
@@ -897,13 +899,10 @@ async function handleCommand(command, args) {
 
   const keepAlive = !READONLY_COMMANDS.has(command);
   if (keepAlive) noteAgentActivity();
-  // Read-only status/tabs should also not leave focus disturbed if a prior
-  // command raced; only mutating work needs a full silent guard.
-  const guardFocus = keepAlive && !wantsForeground(args);
-  const focusSnapshot = guardFocus ? await captureUserFocus() : null;
-  // A leftover debugger session from an earlier foreground click will keep
-  // stealing the window on the next silent command. Drop it first.
-  if (guardFocus && agentTabId) {
+  // Isolation model: never attach debugger or restore tabs after a silent
+  // command. Correcting focus with tabs.update({ active: true }) is itself a steal.
+  const silent = keepAlive && !wantsForeground(args);
+  if (silent && agentTabId) {
     await detachDebugger(agentTabId);
   }
   try {
@@ -996,7 +995,7 @@ async function handleCommand(command, args) {
       }
 
       case 'newtab': {
-        // Default silent tab in the agent window — never the user's current window
+        // Default silent tab: background tab in the existing window.
         const foreground = !!args.foreground || !!args.focus;
         const tab = await createSilentTab(args.url, { active: foreground });
         await setAgentTabId(tab.id);
@@ -1264,7 +1263,6 @@ async function handleCommand(command, args) {
   } catch (err) {
     return { error: err.message || String(err) };
   } finally {
-    if (guardFocus) await restoreUserFocus(focusSnapshot);
     // Drop cursor + MutationObservers once the tool burst is over.
     if (keepAlive) scheduleAgentUiRelease();
   }
