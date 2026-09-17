@@ -56,7 +56,10 @@ function scheduleAgentUiRelease(delayMs = AGENT_UI_IDLE_MS) {
   if (agentUiReleaseTimer) clearTimeout(agentUiReleaseTimer);
   agentUiReleaseTimer = setTimeout(() => {
     agentUiReleaseTimer = null;
-    if (agentTabId) disableAgentUi(agentTabId).catch(() => {});
+    if (agentTabId) {
+      disableAgentUi(agentTabId).catch(() => {});
+      detachDebugger(agentTabId).catch(() => {});
+    }
   }, delayMs);
 }
 
@@ -71,9 +74,23 @@ async function releaseAgentUiNow() {
   }
 }
 
+async function windowIsFocused(windowId) {
+  if (windowId == null) return false;
+  try {
+    const win = await chrome.windows.get(windowId);
+    return !!win?.focused;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Snapshot of the tab the user is looking at. Automation must not leave the
  * agent tab (or window) in front when the command finishes.
+ *
+ * windowFocused is false when Chrome is in the background (user is in another
+ * app or browser). In that state we must not activate tabs later — on macOS
+ * tabs.update({ active: true }) can bring Chrome to the front.
  */
 async function captureUserFocus() {
   try {
@@ -82,6 +99,7 @@ async function captureUserFocus() {
     return {
       tabId: tab.id,
       windowId: tab.windowId,
+      windowFocused: await windowIsFocused(tab.windowId),
     };
   } catch {
     return null;
@@ -89,15 +107,18 @@ async function captureUserFocus() {
 }
 
 /**
- * If the agent tab stole the active slot in the user's window, put their tab back.
- * Does not call windows.update({ focused: true }) — never yank the OS window.
+ * If the agent tab stole the active slot in the user's already-focused window,
+ * put their tab back. Never call windows.update({ focused: true }).
+ * Never activate a tab in an unfocused window — that yanks Chrome on macOS.
  * If the user switched to some other non-agent tab mid-run, leave them alone.
  */
 async function restoreUserFocus(snapshot) {
   if (!snapshot?.tabId) return;
   try {
+    if (!snapshot.windowFocused) return;
     if (!(await tabExists(snapshot.tabId))) return;
     const windowId = snapshot.windowId;
+    if (!(await windowIsFocused(windowId))) return;
     const [active] = await chrome.tabs.query({
       active: true,
       ...(windowId != null ? { windowId } : {}),
@@ -775,7 +796,9 @@ async function sendToTab(tabId, message) {
   }
 }
 
-async function attachDebugger(tabId) {
+async function attachDebugger(tabId, { allowFocusSteal = false } = {}) {
+  // Attaching the debugger activates the tab and brings Chrome forward on macOS.
+  if (!allowFocusSteal) return false;
   if (!tabId || !chrome.debugger?.attach) return false;
   if (debuggerTabs.has(tabId)) return true;
   try {
@@ -837,19 +860,24 @@ async function clickViaCdpOrDom(tabId, args) {
   if (prepared?.x == null || prepared?.y == null) {
     return sendToTab(tabId, { type: 'dom', command: 'click', args });
   }
-  const attached = await attachDebugger(tabId);
-  if (attached) {
-    try {
-      await cdpClick(tabId, prepared.x, prepared.y);
-      return {
-        ok: true,
-        via: 'cdp',
-        selector: args.selector,
-        tag: prepared.tag,
-        x: prepared.x,
-        y: prepared.y,
-      };
-    } catch {}
+  // debugger.attach + CDP mouse events activate the target tab and bring
+  // Chrome to the front on macOS. Only use them when the user asked to
+  // take over (foreground / focus / useActive).
+  if (wantsForeground(args)) {
+    const attached = await attachDebugger(tabId, { allowFocusSteal: true });
+    if (attached) {
+      try {
+        await cdpClick(tabId, prepared.x, prepared.y);
+        return {
+          ok: true,
+          via: 'cdp',
+          selector: args.selector,
+          tag: prepared.tag,
+          x: prepared.x,
+          y: prepared.y,
+        };
+      } catch {}
+    }
   }
   const result = await sendToTab(tabId, { type: 'dom', command: 'click', args });
   return { ...result, via: 'dom' };
@@ -873,6 +901,11 @@ async function handleCommand(command, args) {
   // command raced; only mutating work needs a full silent guard.
   const guardFocus = keepAlive && !wantsForeground(args);
   const focusSnapshot = guardFocus ? await captureUserFocus() : null;
+  // A leftover debugger session from an earlier foreground click will keep
+  // stealing the window on the next silent command. Drop it first.
+  if (guardFocus && agentTabId) {
+    await detachDebugger(agentTabId);
+  }
   try {
     switch (command) {
       case 'status': {
